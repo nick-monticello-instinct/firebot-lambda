@@ -24,19 +24,25 @@ SLACK_HEADERS = {
 def lambda_handler(event, context=None):
     try:
         print("Incoming event:", json.dumps(event))
+
+        # Prevent Slack retry loops
+        if event["headers"].get("x-slack-retry-num"):
+            print("Slack retry detected — skipping processing to avoid duplication.")
+            return {"statusCode": 200, "body": "Retry ignored"}
+
         if event.get("body"):
             body = json.loads(event["body"])
 
+            # Slack URL verification
             if body.get("type") == "url_verification":
-                return {
-                    "statusCode": 200,
-                    "body": body.get("challenge")
-                }
+                return {"statusCode": 200, "body": body.get("challenge")}
 
             if body.get("type") == "event_callback":
                 user_id = body["event"]["user"]
                 text = body["event"]["text"]
                 print("Processing Slack message text:", text)
+
+                # Respond quickly to Slack, process async
                 process_fire_ticket(body, user_id)
                 return {"statusCode": 200, "body": "OK"}
 
@@ -56,6 +62,7 @@ def process_fire_ticket(event_data, user_id):
     issue_key = issue_match.group(1)
     jira_data = fetch_jira_data(issue_key)
     print("Jira API response status:", jira_data.status_code)
+
     if jira_data.status_code != 200:
         raise Exception("Failed to fetch Jira ticket data")
 
@@ -64,8 +71,10 @@ def process_fire_ticket(event_data, user_id):
     summary = generate_gemini_summary(parsed)
 
     date_str = datetime.datetime.now().strftime("%Y%m%d")
-    channel_slug = re.sub(r"[^a-z0-9\-]", "", str(parsed["hospital"]).lower())
+    raw_hospital = str(parsed.get("hospital", "unknown"))
+    channel_slug = re.sub(r"[^a-z0-9]+", "-", raw_hospital.lower()).strip("-")
     base_channel_name = f"incident-{date_str}-{channel_slug}"
+
     channel_id, channel_name = create_incident_channel(base_channel_name)
 
     invite_user_to_channel(user_id, channel_id)
@@ -98,7 +107,7 @@ Description:
 
 Please provide a concise summary in plain English suitable for a Slack incident channel."""
 
-        model = genai.GenerativeModel("gemini-pro")
+        model = genai.GenerativeModel("models/gemini-pro")
         response = model.generate_content(prompt)
         return response.text.strip()
 
@@ -108,15 +117,20 @@ Please provide a concise summary in plain English suitable for a Slack incident 
 
 def create_incident_channel(base_name, attempt=0):
     name = base_name if attempt == 0 else f"{base_name}-{attempt}"
+    payload = {"name": name, "is_private": False}
+    print(f"Creating Slack channel with payload: {json.dumps(payload)}")
+
     response = requests.post(
         "https://slack.com/api/conversations.create",
         headers=SLACK_HEADERS,
-        json={"name": name, "is_private": False}
+        json=payload
     ).json()
 
     if response.get("ok"):
+        print("Channel created:", response["channel"])
         return response["channel"]["id"], response["channel"]["name"]
     elif response.get("error") == "name_taken" and attempt < 10:
+        print(f"Channel name taken, retrying with suffix... (attempt {attempt + 1})")
         return create_incident_channel(base_name, attempt + 1)
     else:
         raise Exception(f"Failed to create channel: {response}")
@@ -143,4 +157,4 @@ def post_summary_message(channel_id, summary):
         "text": f"*Incident Summary:*\n{summary}"
     })
     if not response.ok:
-        print("Error posting GPT summary message:", response.text)
+        print("Error posting summary message:", response.text)
