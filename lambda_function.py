@@ -220,9 +220,6 @@ def analyze_and_reach_out_to_creator(ticket, channel_id, issue_key):
         parsed_data = parse_jira_ticket(ticket)
         missing_info_analysis = analyze_missing_information(parsed_data, ticket)
         
-        # Post general analysis to channel for all responders
-        post_incident_analysis_message(channel_id, missing_info_analysis, issue_key)
-        
         # Find creator in Slack
         slack_user_id = find_slack_user_by_email(creator_info.get('email'))
         
@@ -231,15 +228,16 @@ def analyze_and_reach_out_to_creator(ticket, channel_id, issue_key):
             print(f"Inviting ticket creator {slack_user_id} to incident channel")
             invite_user_to_channel(slack_user_id, channel_id)
         
-        # Generate and send outreach message
-        outreach_message = generate_creator_outreach_message(
+        # Generate and send combined analysis + outreach message
+        combined_message = generate_combined_incident_message(
             creator_info, 
             missing_info_analysis, 
             issue_key,
-            slack_user_id
+            slack_user_id,
+            parsed_data
         )
         
-        post_creator_outreach_message(channel_id, outreach_message, slack_user_id)
+        post_creator_outreach_message(channel_id, combined_message, slack_user_id)
         
         print(f"Successfully completed analysis and outreach for {issue_key}")
         
@@ -358,13 +356,18 @@ def find_slack_user_by_email(email):
         print(f"Error finding Slack user by email: {e}")
         return None
 
-def generate_creator_outreach_message(creator_info, missing_info_analysis, issue_key, slack_user_id):
-    """Generate a personalized outreach message for the ticket creator"""
+def generate_combined_incident_message(creator_info, missing_info_analysis, issue_key, slack_user_id, parsed_data):
+    """Generate a combined incident analysis and creator outreach message"""
     try:
         creator_name = creator_info.get("display_name", "").split()[0] if creator_info.get("display_name") else "there"
         user_mention = f"<@{slack_user_id}>" if slack_user_id else creator_name
         
-        prompt = f"""You are a helpful incident response bot for a fun veterinary software company. Generate a friendly, supportive message to reach out to the person who created incident ticket {issue_key}.
+        # Get a short summary of the incident
+        incident_summary = parsed_data.get('summary', '')[:200] + ('...' if len(parsed_data.get('summary', '')) > 200 else '')
+        
+        prompt = f"""You are a helpful incident response bot for a fun veterinary software company. Generate a single, comprehensive message that combines incident analysis with creator outreach for ticket {issue_key}.
+
+INCIDENT SUMMARY: {incident_summary}
 
 CREATOR INFO:
 Name: {creator_name}
@@ -372,24 +375,25 @@ Name: {creator_name}
 MISSING INFORMATION ANALYSIS:
 {missing_info_analysis}
 
-Create a message that:
-1. Thanks them for reporting the incident and acknowledges their great work
-2. Lets them know a developer is on the way to help  
-3. Mentions the specific information that would be helpful (based on the analysis) in a collaborative way
-4. Asks if they have any additional context that might speed up resolution
-5. Is encouraging and supportive - remember incidents can be stressful and they're trying their best
-6. Keeps the tone friendly and cooperative - we're all on the same team helping veterinary practices
+Create a unified message that:
+1. Briefly summarizes the incident in 1-2 sentences
+2. Thanks the creator for their great work reporting it
+3. Mentions that a developer is on the way
+4. Asks for specific missing information (based on the analysis) in a friendly, collaborative way
+5. Keeps it concise but comprehensive - useful for both the creator and other responders
+6. Maintains an encouraging, supportive tone (incidents can be stressful)
+7. Emphasizes we're all working together to help veterinary practices
 
-Keep it conversational, supportive, and professional. Make it clear this is automated assistance to help get them faster resolution.
+Format it as a single, well-organized message. Use bullet points for the information requests to keep it scannable. Keep it conversational but professional.
 
-The message should be suitable for posting in a Slack channel. Don't include the person's name at the beginning of the message since it will be mentioned separately. Don't include channel mentions or formatting beyond basic Slack markdown."""
+The message should be suitable for posting in a Slack channel. Don't include the person's name at the beginning since it will be mentioned separately. Don't include channel mentions or formatting beyond basic Slack markdown."""
 
         fallback_models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
         models_to_try = [GEMINI_MODEL] + [m for m in fallback_models if m != GEMINI_MODEL]
         
         for model_name in models_to_try:
             try:
-                print(f"Generating outreach message with model: {model_name}")
+                print(f"Generating combined incident message with model: {model_name}")
                 model = genai.GenerativeModel(model_name)
                 response = model.generate_content(prompt)
                 
@@ -397,13 +401,13 @@ The message should be suitable for posting in a Slack channel. Don't include the
                     message = response.text.strip()
                     # Add user mention at the beginning
                     final_message = f"{user_mention} {message}"
-                    print(f"Successfully generated outreach message with model: {model_name}")
+                    print(f"Successfully generated combined incident message with model: {model_name}")
                     return final_message
                 elif response.parts:
                     message_text = ''.join(part.text for part in response.parts if hasattr(part, 'text'))
                     if message_text:
                         final_message = f"{user_mention} {message_text.strip()}"
-                        print(f"Successfully generated outreach message with model: {model_name}")
+                        print(f"Successfully generated combined incident message with model: {model_name}")
                         return final_message
                 
             except Exception as e:
@@ -411,10 +415,10 @@ The message should be suitable for posting in a Slack channel. Don't include the
                 continue
         
         # Fallback message if AI fails
-        return f"{user_mention} Thanks for reporting incident {issue_key}! You did great work getting this submitted. A developer is on the way to help. If you have any additional details, error messages, or context that might help us resolve this faster, please share them here. We're working to get this resolved as quickly as possible!"
+        return f"{user_mention} **Incident Summary:** {incident_summary}\n\nThanks for reporting incident {issue_key}! You did great work getting this submitted. A developer is on the way to help. To help us resolve this faster, please share any additional details like reproduction steps, error messages, environment info, or screenshots. We're working to get this resolved as quickly as possible!"
         
     except Exception as e:
-        print(f"Error generating outreach message: {e}")
+        print(f"Error generating combined incident message: {e}")
         return f"Thanks for reporting incident {issue_key}! You did great work getting this submitted. A developer is on the way to help. Please share any additional details that might help us resolve this faster."
 
 def post_creator_outreach_message(channel_id, message, slack_user_id):
@@ -439,29 +443,6 @@ def post_creator_outreach_message(channel_id, message, slack_user_id):
     except Exception as e:
         print(f"Error posting creator outreach message: {e}")
 
-def post_incident_analysis_message(channel_id, analysis, issue_key):
-    """Post general incident analysis to channel for all responders"""
-    try:
-        analysis_message = f":mag: **Incident Analysis for {issue_key}**\n\n{analysis}\n\n*This analysis was automatically generated to help responders understand what information might be needed for faster resolution.*"
-        
-        response = requests.post(
-            "https://slack.com/api/chat.postMessage",
-            headers=SLACK_HEADERS,
-            json={
-                "channel": channel_id,
-                "text": analysis_message,
-                "unfurl_links": False,
-                "unfurl_media": False
-            }
-        ).json()
-        
-        if response.get("ok"):
-            print("Successfully posted incident analysis message")
-        else:
-            print(f"Error posting incident analysis message: {response.get('error')}")
-            
-    except Exception as e:
-        print(f"Error posting incident analysis message: {e}")
 
 # --- JIRA AND GEMINI FUNCTIONS ---
 def fetch_jira_data(issue_key):
