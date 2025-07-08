@@ -26,11 +26,23 @@ jobs:
 
       - name: Install clean dependencies and package Lambda
         run: |
-          rm -rf package/
+          rm -rf package/ lambda_package.zip
           pip install --upgrade pip
           pip install -r requirements.txt -t package/
           cp lambda_function.py package/
-          cd package && zip -r ../lambda_package.zip .
+          
+      - name: Create Lambda package zip
+        run: |
+          cd package
+          zip -r ../lambda_package.zip . -x "*.pyc" "*/__pycache__/*"
+          cd ..
+          
+      - name: Verify package contents
+        run: |
+          echo "=== Lambda package contents ==="
+          unzip -l lambda_package.zip | head -20
+          echo "=== Checking for lambda_function.py at root ==="
+          unzip -l lambda_package.zip | grep "lambda_function.py" || echo "ERROR: lambda_function.py not found at root level"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
