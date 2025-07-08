@@ -24,11 +24,11 @@ jobs:
       - name: Clear pip cache (optional but helps avoid stale builds)
         run: rm -rf ~/.cache/pip
 
-      - name: Install dependencies into build dir
+      - name: Install dependencies and package Lambda
         run: |
-          pip install -r requirements.txt -t python/
-          cp lambda_function.py python/
-          cd python && zip -r ../lambda_package.zip .
+          pip install -r requirements.txt -t package/
+          cp lambda_function.py package/
+          cd package && zip -r ../lambda_package.zip .
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
