@@ -11,8 +11,8 @@ JIRA_USERNAME = os.environ["JIRA_USERNAME"]
 JIRA_API_TOKEN = os.environ["JIRA_API_TOKEN"]
 JIRA_DOMAIN = os.environ["JIRA_DOMAIN"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
-JIRA_HOSPITAL_FIELD = os.environ.get("JIRA_HOSPITAL_FIELD", "customfield_12345")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "models/gemini-pro")
+JIRA_HOSPITAL_FIELD = os.environ.get("JIRA_HOSPITAL_FIELD", "customfield_12345")
 
 # Configure Gemini client
 genai.configure(api_key=GEMINI_API_KEY)
@@ -25,25 +25,18 @@ SLACK_HEADERS = {
 def lambda_handler(event, context=None):
     try:
         print("Incoming event:", json.dumps(event))
-
-        # Prevent Slack retry loops
-        if event["headers"].get("x-slack-retry-num"):
-            print("Slack retry detected — skipping processing to avoid duplication.")
-            return {"statusCode": 200, "body": "Retry ignored"}
-
         if event.get("body"):
             body = json.loads(event["body"])
 
-            # Slack URL verification
             if body.get("type") == "url_verification":
-                return {"statusCode": 200, "body": body.get("challenge")}
+                return {
+                    "statusCode": 200,
+                    "body": body.get("challenge")
+                }
 
             if body.get("type") == "event_callback":
                 user_id = body["event"]["user"]
-                text = body["event"]["text"]
-                print("Processing Slack message text:", text)
-
-                # Respond quickly to Slack, process async
+                print("Processing Slack message text:", body["event"].get("text"))
                 process_fire_ticket(body, user_id)
                 return {"statusCode": 200, "body": "OK"}
 
@@ -54,16 +47,12 @@ def lambda_handler(event, context=None):
         return {"statusCode": 500, "body": str(e)}
 
 def process_fire_ticket(event_data, user_id):
-    text = event_data["event"]["text"]
-    issue_match = re.search(r"(ISD-\d+)", text)
-    if not issue_match:
-        print("No Jira issue key found.")
+    issue_key = extract_issue_key(event_data)
+    if not issue_key:
         return
 
-    issue_key = issue_match.group(1)
     jira_data = fetch_jira_data(issue_key)
     print("Jira API response status:", jira_data.status_code)
-
     if jira_data.status_code != 200:
         raise Exception("Failed to fetch Jira ticket data")
 
@@ -72,15 +61,34 @@ def process_fire_ticket(event_data, user_id):
     summary = generate_gemini_summary(parsed)
 
     date_str = datetime.datetime.now().strftime("%Y%m%d")
-    raw_hospital = str(parsed.get("hospital", "unknown"))
-    channel_slug = re.sub(r"[^a-z0-9]+", "-", raw_hospital.lower()).strip("-")
-    base_channel_name = f"incident-{date_str}-{channel_slug}"
-
+    channel_slug = re.sub(r"[^a-z0-9\-]", "", str(issue_key).lower())
+    base_channel_name = f"incident-{channel_slug}-{date_str}"
     channel_id, channel_name = create_incident_channel(base_channel_name)
 
     invite_user_to_channel(user_id, channel_id)
     post_welcome_message(event_data["event"]["channel"], channel_name)
     post_summary_message(channel_id, summary)
+
+def extract_issue_key(event_data):
+    text = event_data["event"].get("text", "")
+    match = re.search(r"ISD-\d{5}", text)
+    if match:
+        return match.group(0)
+
+    blocks = event_data["event"].get("blocks", [])
+    for block in blocks:
+        elements = block.get("elements", [])
+        for elem in elements:
+            if elem.get("type") == "rich_text_section":
+                for item in elem.get("elements", []):
+                    if item.get("type") in ["text", "link"]:
+                        text_part = item.get("text", "")
+                        match = re.search(r"ISD-\d{5}", text_part)
+                        if match:
+                            return match.group(0)
+
+    print("No Jira issue key found in text or blocks.")
+    return None
 
 def fetch_jira_data(issue_key):
     return requests.get(
@@ -115,23 +123,18 @@ Please provide a concise summary in plain English suitable for a Slack incident 
     except Exception as e:
         print("Error generating Gemini summary:", e)
         return "Gemini summary could not be generated."
-        
+
 def create_incident_channel(base_name, attempt=0):
     name = base_name if attempt == 0 else f"{base_name}-{attempt}"
-    payload = {"name": name, "is_private": False}
-    print(f"Creating Slack channel with payload: {json.dumps(payload)}")
-
     response = requests.post(
         "https://slack.com/api/conversations.create",
         headers=SLACK_HEADERS,
-        json=payload
+        json={"name": name, "is_private": False}
     ).json()
 
     if response.get("ok"):
-        print("Channel created:", response["channel"])
         return response["channel"]["id"], response["channel"]["name"]
     elif response.get("error") == "name_taken" and attempt < 10:
-        print(f"Channel name taken, retrying with suffix... (attempt {attempt + 1})")
         return create_incident_channel(base_name, attempt + 1)
     else:
         raise Exception(f"Failed to create channel: {response}")
@@ -158,4 +161,4 @@ def post_summary_message(channel_id, summary):
         "text": f"*Incident Summary:*\n{summary}"
     })
     if not response.ok:
-        print("Error posting summary message:", response.text)
+        print("Error posting GPT summary message:", response.text)
