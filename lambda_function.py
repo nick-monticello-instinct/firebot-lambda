@@ -62,7 +62,7 @@ def process_fire_ticket(event_data, user_id):
         print("No Jira issue key found in text:", text)
         return
 
-    issue_key = f"ISD-{issue_match.group(1)}"
+    issue_key = issue_match.group(1)
     jira_data = fetch_jira_data(issue_key)
     print("Jira API response status:", jira_data.status_code)
     if jira_data.status_code != 200:
