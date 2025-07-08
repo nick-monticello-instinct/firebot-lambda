@@ -12,6 +12,7 @@ JIRA_API_TOKEN = os.environ["JIRA_API_TOKEN"]
 JIRA_DOMAIN = os.environ["JIRA_DOMAIN"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 JIRA_HOSPITAL_FIELD = os.environ.get("JIRA_HOSPITAL_FIELD", "customfield_12345")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "models/gemini-pro")
 
 # Configure Gemini client
 genai.configure(api_key=GEMINI_API_KEY)
@@ -107,14 +108,14 @@ Description:
 
 Please provide a concise summary in plain English suitable for a Slack incident channel."""
 
-        model = genai.GenerativeModel("models/gemini-pro")
+        model = genai.GenerativeModel(GEMINI_MODEL)
         response = model.generate_content(prompt)
         return response.text.strip()
 
     except Exception as e:
         print("Error generating Gemini summary:", e)
         return "Gemini summary could not be generated."
-
+        
 def create_incident_channel(base_name, attempt=0):
     name = base_name if attempt == 0 else f"{base_name}-{attempt}"
     payload = {"name": name, "is_private": False}
