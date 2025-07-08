@@ -72,13 +72,16 @@ def lambda_handler(event, context=None):
                 event_data = body.get("event", {})
                 event_id = create_event_id(event_data)
                 
+                print(f"Current cache contents: {list(processed_events)}")
+                print(f"Checking if event {event_id} is already processed...")
+                
                 if event_id in processed_events:
-                    print(f"Duplicate event detected, skipping: {event_id}")
+                    print(f"❌ Duplicate event detected, skipping: {event_id}")
                     return {"statusCode": 200, "body": "Duplicate event skipped"}
                 
                 # Mark event as processed
+                print(f"✅ New event detected: {event_id}")
                 add_to_cache(event_id)
-                print(f"Processing new event: {event_id}")
                 
                 user_id = event_data.get("user")
                 try:
@@ -87,6 +90,7 @@ def lambda_handler(event, context=None):
                     print("Error during fire ticket processing:", err)
                     # Remove from processed events if processing failed
                     processed_events.discard(event_id)
+                    print(f"Removed failed event from cache: {event_id}")
                     return {"statusCode": 500, "body": str(err)}
                 return {"statusCode": 200, "body": "OK"}
 
@@ -98,15 +102,25 @@ def lambda_handler(event, context=None):
 
 def create_event_id(event_data):
     """Create a unique identifier for deduplication"""
-    # Use timestamp, channel, user, and text to create unique ID
-    timestamp = event_data.get("ts", "")
+    # Use channel, user, and Jira issue key for deduplication
+    # This is more stable than timestamp which might vary slightly
     channel = event_data.get("channel", "")
     user = event_data.get("user", "")
     text = event_data.get("text", "")
     
-    # Create a hash-like identifier
-    unique_string = f"{timestamp}_{channel}_{user}_{text}"
-    return hashlib.md5(unique_string.encode()).hexdigest()[:16]
+    # Extract Jira issue key from text for more targeted deduplication
+    issue_match = re.search(r"(ISD-\d{5})", text)
+    issue_key = issue_match.group(1) if issue_match else ""
+    
+    # Create identifier based on what really matters: user + channel + issue
+    unique_string = f"{channel}_{user}_{issue_key}"
+    event_id = hashlib.md5(unique_string.encode()).hexdigest()[:16]
+    
+    # Log for debugging
+    print(f"Event deduplication - Channel: {channel}, User: {user}, Issue: {issue_key}")
+    print(f"Generated event ID: {event_id}")
+    
+    return event_id
 
 # --- CORE LOGIC ---
 def process_fire_ticket(event_data, user_id):
