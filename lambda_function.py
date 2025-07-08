@@ -2,6 +2,7 @@ import json
 import os
 import re
 import datetime
+import hashlib
 import requests
 import google.generativeai as genai
 
@@ -24,6 +25,25 @@ if GEMINI_MODEL in MODEL_MAPPING:
 
 JIRA_HOSPITAL_FIELD = os.environ.get("JIRA_HOSPITAL_FIELD", "customfield_12345")
 JIRA_SUMMARY_FIELD = "customfield_10250"
+
+# --- DEDUPLICATION CACHE ---
+# Simple in-memory cache for deduplication (resets on each Lambda cold start)
+processed_events = set()
+MAX_CACHE_SIZE = 1000  # Prevent memory issues in long-running containers
+
+def add_to_cache(event_id):
+    """Add event to cache with size management"""
+    global processed_events
+    
+    # If cache is getting too large, clear oldest half
+    if len(processed_events) >= MAX_CACHE_SIZE:
+        print(f"Cache size limit reached ({MAX_CACHE_SIZE}), clearing oldest entries")
+        # Convert to list, keep newest half, convert back to set
+        events_list = list(processed_events)
+        processed_events = set(events_list[len(events_list)//2:])
+    
+    processed_events.add(event_id)
+    print(f"Added to cache: {event_id} (cache size: {len(processed_events)})")
 
 # --- CLIENTS AND HEADERS ---
 # Configure Gemini client globally
@@ -48,11 +68,25 @@ def lambda_handler(event, context=None):
                 }
 
             if body.get("type") == "event_callback":
-                user_id = body["event"].get("user")
+                # Check for duplicate events
+                event_data = body.get("event", {})
+                event_id = create_event_id(event_data)
+                
+                if event_id in processed_events:
+                    print(f"Duplicate event detected, skipping: {event_id}")
+                    return {"statusCode": 200, "body": "Duplicate event skipped"}
+                
+                # Mark event as processed
+                add_to_cache(event_id)
+                print(f"Processing new event: {event_id}")
+                
+                user_id = event_data.get("user")
                 try:
                     process_fire_ticket(body, user_id)
                 except Exception as err:
                     print("Error during fire ticket processing:", err)
+                    # Remove from processed events if processing failed
+                    processed_events.discard(event_id)
                     return {"statusCode": 500, "body": str(err)}
                 return {"statusCode": 200, "body": "OK"}
 
@@ -61,6 +95,18 @@ def lambda_handler(event, context=None):
     except Exception as e:
         print("Unhandled exception in lambda_handler:", e)
         return {"statusCode": 500, "body": str(e)}
+
+def create_event_id(event_data):
+    """Create a unique identifier for deduplication"""
+    # Use timestamp, channel, user, and text to create unique ID
+    timestamp = event_data.get("ts", "")
+    channel = event_data.get("channel", "")
+    user = event_data.get("user", "")
+    text = event_data.get("text", "")
+    
+    # Create a hash-like identifier
+    unique_string = f"{timestamp}_{channel}_{user}_{text}"
+    return hashlib.md5(unique_string.encode()).hexdigest()[:16]
 
 # --- CORE LOGIC ---
 def process_fire_ticket(event_data, user_id):
