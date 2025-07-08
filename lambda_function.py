@@ -4,6 +4,7 @@ import re
 import datetime
 import requests
 import google.generativeai as genai  # Gemini SDK
+from threading import Thread
 
 # ENVIRONMENT VARIABLES
 SLACK_BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
@@ -23,6 +24,8 @@ SLACK_HEADERS = {
     "Content-Type": "application/json"
 }
 
+PROCESSED_EVENT_IDS = set()
+
 def lambda_handler(event, context=None):
     try:
         print("Incoming event:", json.dumps(event))
@@ -36,11 +39,15 @@ def lambda_handler(event, context=None):
                 }
 
             if body.get("type") == "event_callback":
+                event_id = body.get("event_id")
+                if event_id in PROCESSED_EVENT_IDS:
+                    print(f"Duplicate event_id {event_id} ignored.")
+                    return {"statusCode": 200, "body": "Duplicate ignored"}
+                PROCESSED_EVENT_IDS.add(event_id)
+
                 user_id = body["event"].get("user")
-                text = body["event"].get("text", "")
-                print("Processing Slack message text:", text)
-                process_fire_ticket(body, user_id)
-                return {"statusCode": 200, "body": "OK"}
+                Thread(target=process_fire_ticket, args=(body, user_id)).start()
+                return {"statusCode": 200, "body": "Processing asynchronously"}
 
         return {"statusCode": 400, "body": "Bad request"}
 
@@ -66,7 +73,8 @@ def process_fire_ticket(event_data, user_id):
     summary = generate_gemini_summary(parsed)
 
     date_str = datetime.datetime.now().strftime("%Y%m%d")
-    base_channel_name = f"incident-{issue_key.lower()}-{date_str}"
+    channel_slug = issue_key.lower()
+    base_channel_name = f"incident-{channel_slug}-{date_str}"
     channel_id, channel_name = create_incident_channel(base_channel_name)
 
     invite_user_to_channel(user_id, channel_id)
@@ -109,11 +117,10 @@ Please provide a concise summary in plain English suitable for a Slack incident 
         return "Gemini summary could not be generated."
 
 def create_incident_channel(base_name, attempt=0):
-    # Check for existing non-archived public channel
     list_response = requests.get(
         "https://slack.com/api/conversations.list",
         headers=SLACK_HEADERS,
-        params={"exclude_archived": "true", "types": "public_channel", "limit": 1000}
+        params={"exclude_archived": "true", "limit": 1000}
     ).json()
 
     if list_response.get("ok"):
@@ -122,7 +129,6 @@ def create_incident_channel(base_name, attempt=0):
                 print(f"Channel '{base_name}' already exists. Reusing.")
                 return channel["id"], channel["name"]
 
-    # If not found, attempt to create
     name = base_name if attempt == 0 else f"{base_name}-{attempt}"
     response = requests.post(
         "https://slack.com/api/conversations.create",
