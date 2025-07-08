@@ -18,16 +18,14 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install zip (required for packaging)
+      - name: Install zip
         run: sudo apt-get update && sudo apt-get install -y zip
 
-      - name: Clear Python cache
-        run: |
-          rm -rf ~/.cache/pip
-          
+      - name: Clear pip cache (optional but helps avoid stale builds)
+        run: rm -rf ~/.cache/pip
+
       - name: Install dependencies into build dir
         run: |
-          pip install --upgrade pip
           pip install -r requirements.txt -t python/
           cp lambda_function.py python/
           cd python && zip -r ../lambda_package.zip .
