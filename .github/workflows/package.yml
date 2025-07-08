@@ -36,10 +36,37 @@ jobs:
           # Remove any existing zip
           rm -f lambda_package.zip
           
-          # Use a simple approach that works reliably for Lambda
-          cd package
-          zip -r9 ../lambda_package.zip * -x "*.pyc" "*/__pycache__/*" "*.pyo" "*/.DS_Store"
-          cd ..
+          # Use Python to create a proper Lambda zip with files at root level
+          python3 << 'EOF'
+          import zipfile
+          import os
+          import fnmatch
+          
+          def should_exclude(filepath):
+              exclude_patterns = ['*.pyc', '*/__pycache__/*', '*.pyo', '*/.DS_Store', '*.egg-info/*']
+              for pattern in exclude_patterns:
+                  if fnmatch.fnmatch(filepath, pattern):
+                      return True
+              return False
+          
+          with zipfile.ZipFile('lambda_package.zip', 'w', zipfile.ZIP_DEFLATED) as zipf:
+              # Walk through the package directory
+              for root, dirs, files in os.walk('package'):
+                  # Remove __pycache__ from dirs to avoid traversing
+                  dirs[:] = [d for d in dirs if d != '__pycache__']
+                  
+                  for file in files:
+                      filepath = os.path.join(root, file)
+                      # Calculate the archive path (remove 'package/' prefix)
+                      arcname = os.path.relpath(filepath, 'package')
+                      
+                      # Skip excluded files
+                      if not should_exclude(filepath):
+                          print(f"Adding: {arcname}")
+                          zipf.write(filepath, arcname)
+          
+          print("Lambda package created successfully!")
+          EOF
           
       - name: Verify package contents
         run: |
