@@ -111,23 +111,25 @@ def lambda_handler(event, context=None):
 
 def create_event_id(event_data):
     """Create a unique identifier for deduplication"""
-    # Use channel, user, and Jira issue key for deduplication
-    # This is more stable than timestamp which might vary slightly
+    # Use channel, user, timestamp, and Jira issue key for deduplication
     channel = event_data.get("channel", "")
     user = event_data.get("user", "")
     text = event_data.get("text", "")
+    timestamp = event_data.get("ts", "")  # Slack event timestamp
     
     # Extract Jira issue key from text for more targeted deduplication
     issue_match = re.search(r"(ISD-\d{5})", text)
     issue_key = issue_match.group(1) if issue_match else ""
     
-    # Create identifier based on what really matters: user + channel + issue
-    unique_string = f"{channel}_{user}_{issue_key}"
+    # Create identifier based on what really matters: user + channel + issue + timestamp
+    unique_string = f"{channel}_{user}_{issue_key}_{timestamp}"
     event_id = hashlib.md5(unique_string.encode()).hexdigest()[:16]
     
     # Log for debugging
-    print(f"Event deduplication - Channel: {channel}, User: {user}, Issue: {issue_key}")
+    print(f"Event deduplication - Channel: {channel}, User: {user}, Issue: {issue_key}, Timestamp: {timestamp}")
     print(f"Generated event ID: {event_id}")
+    print(f"Current cache size: {len(processed_events)}")
+    print(f"Current cache contents: {list(processed_events)}")
     
     return event_id
 
@@ -172,7 +174,14 @@ def process_fire_ticket(event_data, user_id):
 
         invite_user_to_channel(user_id, channel_id)
         post_welcome_message(event_data["event"]["channel"], channel_name, channel_id)
-        post_summary_message(channel_id, summary)
+        
+        # Check if we've already posted the summary for this incident
+        summary_cache_key = f"summary_{issue_key}"
+        if summary_cache_key not in processed_events:
+            processed_events.add(summary_cache_key)
+            post_summary_message(channel_id, summary)
+        else:
+            print(f"Summary for {issue_key} already posted, skipping")
         
         # NEW: Analyze ticket for missing information and reach out to creator
         try:
@@ -191,36 +200,54 @@ def analyze_and_reach_out_to_creator(ticket, channel_id, issue_key):
     """Analyze ticket for missing info and reach out to creator"""
     print(f"Analyzing ticket {issue_key} for missing information...")
     
-    # Extract creator information from Jira
-    creator_info = extract_creator_info(ticket)
-    if not creator_info:
-        print("Could not extract creator information from ticket")
+    # Check if we've already processed this incident's analysis
+    analysis_cache_key = f"analysis_{issue_key}"
+    if analysis_cache_key in processed_events:
+        print(f"Analysis for {issue_key} already completed, skipping")
         return
     
-    # Analyze ticket for missing information
-    parsed_data = parse_jira_ticket(ticket)
-    missing_info_analysis = analyze_missing_information(parsed_data, ticket)
+    # Mark this analysis as being processed
+    processed_events.add(analysis_cache_key)
     
-    # Post general analysis to channel for all responders
-    post_incident_analysis_message(channel_id, missing_info_analysis, issue_key)
-    
-    # Find creator in Slack
-    slack_user_id = find_slack_user_by_email(creator_info.get('email'))
-    
-    # Invite creator to the incident channel if found in Slack
-    if slack_user_id:
-        print(f"Inviting ticket creator {slack_user_id} to incident channel")
-        invite_user_to_channel(slack_user_id, channel_id)
-    
-    # Generate and send outreach message
-    outreach_message = generate_creator_outreach_message(
-        creator_info, 
-        missing_info_analysis, 
-        issue_key,
-        slack_user_id
-    )
-    
-    post_creator_outreach_message(channel_id, outreach_message, slack_user_id)
+    try:
+        # Extract creator information from Jira
+        creator_info = extract_creator_info(ticket)
+        if not creator_info:
+            print("Could not extract creator information from ticket")
+            return
+        
+        # Analyze ticket for missing information
+        parsed_data = parse_jira_ticket(ticket)
+        missing_info_analysis = analyze_missing_information(parsed_data, ticket)
+        
+        # Post general analysis to channel for all responders
+        post_incident_analysis_message(channel_id, missing_info_analysis, issue_key)
+        
+        # Find creator in Slack
+        slack_user_id = find_slack_user_by_email(creator_info.get('email'))
+        
+        # Invite creator to the incident channel if found in Slack
+        if slack_user_id:
+            print(f"Inviting ticket creator {slack_user_id} to incident channel")
+            invite_user_to_channel(slack_user_id, channel_id)
+        
+        # Generate and send outreach message
+        outreach_message = generate_creator_outreach_message(
+            creator_info, 
+            missing_info_analysis, 
+            issue_key,
+            slack_user_id
+        )
+        
+        post_creator_outreach_message(channel_id, outreach_message, slack_user_id)
+        
+        print(f"Successfully completed analysis and outreach for {issue_key}")
+        
+    except Exception as e:
+        # Remove from cache if processing failed so it can be retried
+        processed_events.discard(analysis_cache_key)
+        print(f"Error in analyze_and_reach_out_to_creator: {e}")
+        raise
 
 def extract_creator_info(ticket):
     """Extract creator/reporter information from Jira ticket"""
