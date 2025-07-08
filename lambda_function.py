@@ -3,7 +3,7 @@ import os
 import re
 import datetime
 import requests
-from openai import OpenAI  # openai>=1.0.0
+from openai import OpenAI  # Requires openai>=1.0.0
 
 # ENVIRONMENT VARIABLES
 SLACK_BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
@@ -11,14 +11,10 @@ JIRA_USERNAME = os.environ["JIRA_USERNAME"]
 JIRA_API_TOKEN = os.environ["JIRA_API_TOKEN"]
 JIRA_DOMAIN = os.environ["JIRA_DOMAIN"]
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
+JIRA_HOSPITAL_FIELD = os.environ.get("JIRA_HOSPITAL_FIELD", "customfield_12345")
 
-client = OpenAI()
-...
-response = client.chat.completions.create(
-    model="gpt-4",
-    messages=[...],
-    api_key=os.environ["OPENAI_API_KEY"]
-)
+# Set up OpenAI client with the API key at init (only here)
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 SLACK_HEADERS = {
     "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
@@ -49,7 +45,7 @@ def lambda_handler(event, context=None):
         return {"statusCode": 400, "body": "Bad request"}
 
     except Exception as e:
-        print("Unhandled exception in lambda_handler", e)
+        print("Unhandled exception in lambda_handler:", e)
         return {"statusCode": 500, "body": str(e)}
 
 
@@ -90,8 +86,7 @@ def fetch_jira_data(issue_key):
 
 def parse_jira_ticket(ticket):
     fields = ticket.get("fields", {})
-    hospital_field = os.environ.get("JIRA_HOSPITAL_FIELD", "customfield_12345")
-    hospital = fields.get(hospital_field, "unknown-hospital")
+    hospital = fields.get(JIRA_HOSPITAL_FIELD, "unknown-hospital")
     summary = fields.get("summary", "")
     description = fields.get("description", "")
     return {"hospital": hospital, "summary": summary, "description": description}
@@ -115,8 +110,7 @@ Please provide a concise summary in plain English suitable for a Slack incident 
                 {"role": "system", "content": "You summarize Jira incidents for engineers."},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.5,
-            api_key=OPENAI_API_KEY  # ✅ pass key here instead of client init
+            temperature=0.5
         )
 
         return response.choices[0].message.content.strip()
@@ -131,7 +125,7 @@ def create_incident_channel(base_name, attempt=0):
     response = requests.post(
         "https://slack.com/api/conversations.create",
         headers=SLACK_HEADERS,
-        json={"name": name, "is_private": False}  # ✅ Public channel
+        json={"name": name, "is_private": False}
     ).json()
 
     if response.get("ok"):
