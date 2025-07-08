@@ -63,9 +63,9 @@ def process_fire_ticket(event_data, user_id):
 
     date_str = datetime.datetime.now().strftime("%Y%m%d")
     channel_slug = re.sub(r"[^a-z0-9\-]", "", parsed["hospital"].lower())
-    base_channel_name = f"incident-{date_str}-{channel_slug}"
-    channel_id, channel_name = create_incident_channel(base_channel_name)
+    channel_name = f"incident-{date_str}-{channel_slug}"
 
+    channel_id = get_or_create_channel(channel_name)
     invite_user_to_channel(user_id, channel_id)
     post_welcome_message(event_data["event"]["channel"], channel_name)
 
@@ -78,7 +78,7 @@ def fetch_jira_data(issue_key):
 
 def parse_jira_ticket(ticket):
     fields = ticket.get("fields", {})
-    hospital = fields.get("customfield_12345", "unknown-hospital")  # Replace with real custom field ID
+    hospital = fields.get("customfield_12345", "unknown-hospital")  # Replace with real field
     summary = fields.get("summary", "")
     description = fields.get("description", "")
     return {"hospital": hospital, "summary": summary, "description": description}
@@ -95,21 +95,27 @@ def generate_gpt_summary(data):
         print("Error generating GPT summary:", e)
         return ""
 
-def create_incident_channel(base_name, attempt=0):
-    # Retry suffix if name taken
-    name = base_name if attempt == 0 else f"{base_name}-{attempt}"
+def get_or_create_channel(name):
+    # Check if channel already exists
+    result = requests.get("https://slack.com/api/conversations.list", headers=SLACK_HEADERS).json()
+    if result.get("ok"):
+        for ch in result["channels"]:
+            if ch["name"] == name:
+                print(f"Channel '{name}' already exists.")
+                return ch["id"]
+
+    # Create the public channel
     response = requests.post(
         "https://slack.com/api/conversations.create",
         headers=SLACK_HEADERS,
-        json={"name": name}
+        json={"name": name, "is_private": False}
     ).json()
 
     if response.get("ok"):
-        return response["channel"]["id"], response["channel"]["name"]
-    elif response.get("error") == "name_taken" and attempt < 10:
-        return create_incident_channel(base_name, attempt + 1)
+        print(f"Channel '{name}' created.")
+        return response["channel"]["id"]
     else:
-        raise Exception(f"Failed to create channel: {response}")
+        raise Exception(f"Failed to create or retrieve channel: {response}")
 
 def invite_user_to_channel(user_id, channel_id):
     response = requests.post("https://slack.com/api/conversations.invite", headers=SLACK_HEADERS, json={
