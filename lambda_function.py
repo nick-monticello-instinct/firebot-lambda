@@ -3,7 +3,7 @@ import os
 import re
 import datetime
 import requests
-from openai import OpenAI  # Updated for v1+ SDK
+from openai import OpenAI  # openai>=1.0.0
 
 # ENVIRONMENT VARIABLES
 SLACK_BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
@@ -12,7 +12,7 @@ JIRA_API_TOKEN = os.environ["JIRA_API_TOKEN"]
 JIRA_DOMAIN = os.environ["JIRA_DOMAIN"]
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+client = OpenAI()  # Do NOT pass api_key here, pass it in the request instead
 
 SLACK_HEADERS = {
     "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
@@ -71,8 +71,6 @@ def process_fire_ticket(event_data, user_id):
 
     invite_user_to_channel(user_id, channel_id)
     post_welcome_message(event_data["event"]["channel"], channel_name)
-
-    # Post GPT summary in the new incident channel
     post_summary_message(channel_id, summary)
 
 
@@ -110,7 +108,8 @@ Please provide a concise summary in plain English suitable for a Slack incident 
                 {"role": "system", "content": "You summarize Jira incidents for engineers."},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.5
+            temperature=0.5,
+            api_key=OPENAI_API_KEY  # ✅ pass key here instead of client init
         )
 
         return response.choices[0].message.content.strip()
@@ -125,7 +124,7 @@ def create_incident_channel(base_name, attempt=0):
     response = requests.post(
         "https://slack.com/api/conversations.create",
         headers=SLACK_HEADERS,
-        json={"name": name, "is_private": False}  # Make channel public
+        json={"name": name, "is_private": False}  # ✅ Public channel
     ).json()
 
     if response.get("ok"):
