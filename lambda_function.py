@@ -114,13 +114,18 @@ Please provide a concise summary in plain English suitable for a Slack incident 
 
         model_name = os.environ.get("GEMINI_MODEL", "gemini-pro")
         model = genai.GenerativeModel(model_name)
-        response = model.generate_content(prompt)
+        response = model.generate_content([prompt])
+
+        if not response or not response.text:
+            print("Empty Gemini response")
+            return "Gemini summary could not be generated."
+
         return response.text.strip()
 
     except Exception as e:
         print("Error generating Gemini summary:", e)
         return "Gemini summary could not be generated."
-
+        
 def create_incident_channel(base_name, attempt=0):
     name = base_name if attempt == 0 else f"{base_name}-{attempt}"
 
