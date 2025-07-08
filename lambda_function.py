@@ -39,15 +39,15 @@ def lambda_handler(event, context=None):
                 }
 
             if body.get("type") == "event_callback":
-                event_id = body.get("event_id")
-                if event_id in PROCESSED_EVENT_IDS:
-                    print(f"Duplicate event_id {event_id} ignored.")
-                    return {"statusCode": 200, "body": "Duplicate ignored"}
-                PROCESSED_EVENT_IDS.add(event_id)
-
                 user_id = body["event"].get("user")
-                Thread(target=process_fire_ticket, args=(body, user_id)).start()
-                return {"statusCode": 200, "body": "Processing asynchronously"}
+                text = body["event"].get("text", "")
+                print("Slack message text:", text)
+                try:
+                    process_fire_ticket(body, user_id)
+                except Exception as err:
+                    print("Error during fire ticket processing:", err)
+                    return {"statusCode": 500, "body": str(err)}
+                return {"statusCode": 200, "body": "OK"}
 
         return {"statusCode": 400, "body": "Bad request"}
 
@@ -57,9 +57,9 @@ def lambda_handler(event, context=None):
 
 def process_fire_ticket(event_data, user_id):
     text = event_data["event"].get("text", "")
-    issue_match = re.search(r"ISD-(\d{5})", text)
+    issue_match = re.search(r"(ISD-\d{5})", text)
     if not issue_match:
-        print("No Jira issue key found.")
+        print("No Jira issue key found in text:", text)
         return
 
     issue_key = f"ISD-{issue_match.group(1)}"
