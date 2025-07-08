@@ -135,6 +135,11 @@ def process_fire_ticket(event_data, user_id):
     issue_key = issue_match.group(1)
     print(f"Found Jira issue: {issue_key}")
     
+    # Check if this incident has already been processed (persistent check across Lambda executions)
+    if check_incident_already_processed(issue_key):
+        print(f"Incident {issue_key} has already been processed recently, skipping")
+        return
+    
     try:
         jira_data = fetch_jira_data(issue_key)
         if jira_data.status_code != 200:
@@ -349,3 +354,67 @@ def post_summary_message(channel_id, summary):
     ).json()
     if not response.get("ok"):
         print(f"Error posting summary message: {response.get('error')}")
+
+def check_incident_already_processed(issue_key):
+    """Check if this incident has already been processed by looking for existing active channel"""
+    try:
+        date_str = datetime.datetime.now().strftime("%Y%m%d")
+        base_channel_name = f"incident-{issue_key.lower()}-{date_str}"
+        
+        response = requests.get(
+            "https://slack.com/api/conversations.list",
+            headers=SLACK_HEADERS,
+            params={"exclude_archived": "false", "limit": 1000}
+        ).json()
+
+        if not response.get("ok"):
+            print(f"Warning: Could not check existing channels: {response}")
+            return False
+
+        existing_channels = {c["name"]: c for c in response.get("channels", [])}
+        
+        # Check if base channel or any numbered version exists and is active
+        for channel_name, channel in existing_channels.items():
+            if (channel_name == base_channel_name or 
+                channel_name.startswith(f"{base_channel_name}-")):
+                if not channel.get("is_archived"):
+                    print(f"Found existing active channel: {channel_name}")
+                    # Check if channel has recent activity (last 5 minutes)
+                    channel_id = channel["id"]
+                    messages = get_recent_channel_messages(channel_id)
+                    if messages:
+                        print(f"Channel {channel_name} has recent activity, incident already processed")
+                        return True
+        
+        return False
+        
+    except Exception as e:
+        print(f"Error checking if incident already processed: {e}")
+        return False
+
+def get_recent_channel_messages(channel_id):
+    """Get messages from the last 5 minutes to check for recent activity"""
+    try:
+        # Get messages from last 5 minutes
+        five_minutes_ago = datetime.datetime.now() - datetime.timedelta(minutes=5)
+        oldest_timestamp = five_minutes_ago.timestamp()
+        
+        response = requests.get(
+            "https://slack.com/api/conversations.history",
+            headers=SLACK_HEADERS,
+            params={
+                "channel": channel_id,
+                "oldest": oldest_timestamp,
+                "limit": 10
+            }
+        ).json()
+        
+        if response.get("ok"):
+            return response.get("messages", [])
+        else:
+            print(f"Warning: Could not get channel history: {response}")
+            return []
+            
+    except Exception as e:
+        print(f"Error getting channel messages: {e}")
+        return []
