@@ -11,7 +11,17 @@ JIRA_USERNAME = os.environ["JIRA_USERNAME"]
 JIRA_API_TOKEN = os.environ["JIRA_API_TOKEN"]
 JIRA_DOMAIN = os.environ["JIRA_DOMAIN"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
+# Use a valid model name with fallback
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-1.5-flash")
+# Map old model names to new ones
+MODEL_MAPPING = {
+    "gemini-pro": "gemini-1.5-pro",
+    "gemini-pro-vision": "gemini-1.5-pro",
+}
+if GEMINI_MODEL in MODEL_MAPPING:
+    GEMINI_MODEL = MODEL_MAPPING[GEMINI_MODEL]
+    print(f"Mapped model to: {GEMINI_MODEL}")
+
 JIRA_HOSPITAL_FIELD = os.environ.get("JIRA_HOSPITAL_FIELD", "customfield_12345")
 JIRA_SUMMARY_FIELD = "customfield_10250"
 
@@ -155,9 +165,14 @@ def extract_text_from_adf(adf_content):
 
 def generate_gemini_summary(data):
     """Generates a summary of a Jira ticket using the Gemini API."""
-    try:
-        model = genai.GenerativeModel(GEMINI_MODEL)
-        prompt = f"""You are a helpful assistant summarizing incident tickets.
+    fallback_models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
+    models_to_try = [GEMINI_MODEL] + [m for m in fallback_models if m != GEMINI_MODEL]
+    
+    for model_name in models_to_try:
+        try:
+            print(f"Trying Gemini model: {model_name}")
+            model = genai.GenerativeModel(model_name)
+            prompt = f"""You are a helpful assistant summarizing incident tickets.
 
 Summary:
 {data['summary']}
@@ -167,22 +182,27 @@ Description:
 
 Please provide a concise summary in plain English suitable for a Slack incident channel."""
 
-        response = model.generate_content(prompt)
-        
-        # Updated response handling for current API
-        if hasattr(response, 'text') and response.text:
-            return response.text.strip()
-        elif response.parts:
-            summary_text = ''.join(part.text for part in response.parts if hasattr(part, 'text'))
-            if summary_text:
-                return summary_text.strip()
-        
-        print("Empty Gemini response")
-        return "Gemini summary could not be generated."
-
-    except Exception as e:
-        print(f"Error generating Gemini summary: {e}")
-        return "Gemini summary could not be generated due to an error."
+            response = model.generate_content(prompt)
+            
+            # Updated response handling for current API
+            if hasattr(response, 'text') and response.text:
+                print(f"Successfully generated summary with model: {model_name}")
+                return response.text.strip()
+            elif response.parts:
+                summary_text = ''.join(part.text for part in response.parts if hasattr(part, 'text'))
+                if summary_text:
+                    print(f"Successfully generated summary with model: {model_name}")
+                    return summary_text.strip()
+            
+            print(f"Empty response from model: {model_name}")
+            
+        except Exception as e:
+            print(f"Error with model {model_name}: {e}")
+            if model_name == models_to_try[-1]:  # Last model failed
+                return "Gemini summary could not be generated due to an error."
+            continue  # Try next model
+    
+    return "Gemini summary could not be generated."
 
 # --- SLACK HELPER FUNCTIONS ---
 def create_incident_channel(base_name):
@@ -205,7 +225,28 @@ def create_incident_channel(base_name):
             print(f"Reusing active channel: {original_name}")
             return channel["id"], original_name
         else:
-            raise Exception(f"Channel {original_name} already exists and is archived. Manual action required.")
+            # Handle archived channels by creating numbered versions
+            print(f"Channel {original_name} is archived, finding next available numbered version")
+            counter = 1
+            while True:
+                numbered_name = f"{original_name}-{counter}"
+                if numbered_name in existing_channels:
+                    if not existing_channels[numbered_name].get("is_archived"):
+                        print(f"Reusing active numbered channel: {numbered_name}")
+                        return existing_channels[numbered_name]["id"], numbered_name
+                    counter += 1
+                else:
+                    # Create the numbered channel
+                    print(f"Creating new numbered channel: {numbered_name}")
+                    create_response = requests.post(
+                        "https://slack.com/api/conversations.create",
+                        headers=SLACK_HEADERS,
+                        json={"name": numbered_name, "is_private": False}
+                    ).json()
+                    if create_response.get("ok"):
+                        return create_response["channel"]["id"], numbered_name
+                    else:
+                        raise Exception(f"Failed to create numbered channel: {create_response.get('error')}")
 
     print(f"Creating new channel: {original_name}")
     create_response = requests.post(
