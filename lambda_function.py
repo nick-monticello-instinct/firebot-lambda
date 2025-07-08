@@ -132,55 +132,64 @@ Please provide a concise summary in plain English suitable for a Slack incident 
         
 def create_incident_channel(base_name):
     original_name = base_name.lower()
-    name_to_try = original_name
-    suffix_attempt = 0
 
-    # Fetch all channels, including archived
-    list_response = requests.get(
+    # Fetch all channels (including archived)
+    response = requests.get(
         "https://slack.com/api/conversations.list",
         headers=SLACK_HEADERS,
-        params={
-            "exclude_archived": "false",  # include archived
-            "limit": 1000
-        }
+        params={"exclude_archived": "false", "limit": 1000}
     ).json()
 
-    existing_channels = {}
-    if list_response.get("ok"):
-        for channel in list_response.get("channels", []):
-            existing_channels[channel["name"]] = channel
+    if not response.get("ok"):
+        raise Exception(f"Failed to list Slack channels: {response}")
 
-    # Look for an existing non-archived match
+    existing_channels = {
+        channel["name"]: channel for channel in response.get("channels", [])
+    }
+
+    # If exact name exists
     if original_name in existing_channels:
-        if not existing_channels[original_name].get("is_archived", False):
-            print(f"Found existing active channel: {original_name}")
-            return existing_channels[original_name]["id"], original_name
+        channel = existing_channels[original_name]
+        if not channel.get("is_archived", False):
+            print(f"Reusing active channel: {original_name}")
+            return channel["id"], original_name
         else:
-            print(f"Channel '{original_name}' is archived. Falling back to new name.")
-
-    # If archived or not found, try fallbacks
-    while True:
-        if name_to_try not in existing_channels:
-            print(f"Creating new channel: {name_to_try}")
-            response = requests.post(
-                "https://slack.com/api/conversations.create",
-                headers=SLACK_HEADERS,
-                json={"name": name_to_try, "is_private": False}
-            ).json()
-
-            if response.get("ok"):
-                return response["channel"]["id"], name_to_try
-            elif response.get("error") == "name_taken":
-                print(f"Channel name '{name_to_try}' is taken. Trying next fallback...")
+            print(f"Found archived channel: {original_name}, falling back to new name")
+            fallback_name = f"{original_name}-new"
+            if fallback_name in existing_channels:
+                fallback_channel = existing_channels[fallback_name]
+                if not fallback_channel.get("is_archived", False):
+                    print(f"Reusing fallback channel: {fallback_name}")
+                    return fallback_channel["id"], fallback_name
+                else:
+                    raise Exception(f"Both original and fallback channel are archived. Cannot proceed.")
             else:
-                raise Exception(f"Failed to create channel: {response}")
+                print(f"Creating fallback channel: {fallback_name}")
+                create = requests.post(
+                    "https://slack.com/api/conversations.create",
+                    headers=SLACK_HEADERS,
+                    json={"name": fallback_name, "is_private": False}
+                ).json()
+                if create.get("ok"):
+                    return create["channel"]["id"], fallback_name
+                else:
+                    raise Exception(f"Failed to create fallback channel: {create}")
 
-        else:
-            print(f"Channel name '{name_to_try}' already exists (likely archived). Trying next fallback...")
+    # If not found at all, create original
+    print(f"No existing channel found. Creating: {original_name}")
+    create = requests.post(
+        "https://slack.com/api/conversations.create",
+        headers=SLACK_HEADERS,
+        json={"name": original_name, "is_private": False}
+    ).json()
 
-        suffix_attempt += 1
-        name_to_try = f"{original_name}-new" if suffix_attempt == 1 else f"{original_name}-new-{suffix_attempt}"
-
+    if create.get("ok"):
+        return create["channel"]["id"], original_name
+    else:
+        if create.get("error") == "name_taken":
+            raise Exception(f"Channel name '{original_name}' taken but not listed. Manual cleanup might be needed.")
+        raise Exception(f"Failed to create channel: {create}")
+        
 def invite_user_to_channel(user_id, channel_id):
     response = requests.post("https://slack.com/api/conversations.invite", headers=SLACK_HEADERS, json={
         "channel": channel_id,
