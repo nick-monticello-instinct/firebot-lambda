@@ -103,8 +103,12 @@ def parse_jira_ticket(ticket):
 from google.generativeai import GenerativeModel, configure
 
 def generate_gemini_summary(data):
+    """
+    Generates a summary of a Jira ticket using the Gemini API.
+    """
     try:
-        configure(api_key=GEMINI_API_KEY)
+        # The genai client is already configured globally, no need to re-configure here.
+        model = genai.GenerativeModel(GEMINI_MODEL)
 
         prompt = f"""You are a helpful assistant summarizing incident tickets.
 
@@ -116,19 +120,24 @@ Description:
 
 Please provide a concise summary in plain English suitable for a Slack incident channel."""
 
-        model = GenerativeModel("gemini-pro")
         response = model.generate_content(prompt)
 
-        if not response or not response.text:
+        # Simplified and safer way to get the text
+        if response.parts:
+            summary_text = ''.join(part.text for part in response.parts)
+        else:
+            # Fallback for cases where response.text might be directly available
+            summary_text = response.text if hasattr(response, 'text') and response.text else ""
+
+        if not summary_text:
             print("Empty Gemini response")
             return "Gemini summary could not be generated."
 
-        summary_text = response.text if hasattr(response, "text") else "".join(p.text for p in response.parts)
         return summary_text.strip()
 
     except Exception as e:
-        print("Error generating Gemini summary:", e)
-        return "Gemini summary could not be generated."
+        print(f"Error generating Gemini summary: {e}")
+        return "Gemini summary could not be generated due to an error."
         
 def create_incident_channel(base_name):
     original_name = base_name.lower()
@@ -201,15 +210,17 @@ def invite_user_to_channel(user_id, channel_id):
 def post_welcome_message(source_channel, new_channel_name):
     response = requests.post("https://slack.com/api/chat.postMessage", headers=SLACK_HEADERS, json={
         "channel": source_channel,
-        "text": f":rotating_light: I've created <#{new_channel_name}> for this incident. Please move all comms there. :rotating_light:"
+        "text": f":rotating_light: I've created #{new_channel_name} for this incident. Please move all comms there. :rotating_light:"
     })
-    if not response.ok:
-        print("Error posting welcome message:", response.text)
+    response_data = response.json()
+    if not response_data.get("ok"):
+        print(f"Error posting welcome message: {response_data.get('error')}")
 
 def post_summary_message(channel_id, summary):
     response = requests.post("https://slack.com/api/chat.postMessage", headers=SLACK_HEADERS, json={
         "channel": channel_id,
         "text": f"*Incident Summary:*\n{summary}"
     })
-    if not response.ok:
-        print("Error posting GPT summary message:", response.text)
+    response_data = response.json()
+    if not response_data.get("ok"):
+        print(f"Error posting summary message: {response_data.get('error')}")
