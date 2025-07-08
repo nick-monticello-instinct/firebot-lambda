@@ -4,7 +4,6 @@ import re
 import datetime
 import requests
 import google.generativeai as genai
-from threading import Thread
 
 # --- ENVIRONMENT VARIABLES ---
 SLACK_BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
@@ -12,7 +11,7 @@ JIRA_USERNAME = os.environ["JIRA_USERNAME"]
 JIRA_API_TOKEN = os.environ["JIRA_API_TOKEN"]
 JIRA_DOMAIN = os.environ["JIRA_DOMAIN"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-pro")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-1.5-flash")
 JIRA_HOSPITAL_FIELD = os.environ.get("JIRA_HOSPITAL_FIELD", "customfield_12345")
 JIRA_SUMMARY_FIELD = "customfield_10250"
 
@@ -56,28 +55,46 @@ def lambda_handler(event, context=None):
 # --- CORE LOGIC ---
 def process_fire_ticket(event_data, user_id):
     text = event_data["event"].get("text", "")
+    print(f"Processing message: {text}")
+    
     issue_match = re.search(r"(ISD-\d{5})", text)
     if not issue_match:
         print("No Jira issue key found in text:", text)
         return
 
     issue_key = issue_match.group(1)
-    jira_data = fetch_jira_data(issue_key)
-    if jira_data.status_code != 200:
-        raise Exception(f"Failed to fetch Jira ticket data: {jira_data.text}")
+    print(f"Found Jira issue: {issue_key}")
+    
+    try:
+        jira_data = fetch_jira_data(issue_key)
+        if jira_data.status_code != 200:
+            raise Exception(f"Failed to fetch Jira ticket data: {jira_data.text}")
 
-    ticket = jira_data.json()
-    parsed_data = parse_jira_ticket(ticket)
-    summary = generate_gemini_summary(parsed_data)
+        ticket = jira_data.json()
+        print(f"Successfully fetched Jira ticket: {issue_key}")
+        
+        parsed_data = parse_jira_ticket(ticket)
+        print(f"Parsed ticket data - Summary length: {len(parsed_data['summary'])}, Description length: {len(parsed_data['description'])}")
+        
+        summary = generate_gemini_summary(parsed_data)
+        print(f"Generated summary length: {len(summary)}")
 
-    date_str = datetime.datetime.now().strftime("%Y%m%d")
-    channel_slug = issue_key.lower()
-    base_channel_name = f"incident-{channel_slug}-{date_str}"
-    channel_id, channel_name = create_incident_channel(base_channel_name)
+        date_str = datetime.datetime.now().strftime("%Y%m%d")
+        channel_slug = issue_key.lower()
+        base_channel_name = f"incident-{channel_slug}-{date_str}"
+        
+        channel_id, channel_name = create_incident_channel(base_channel_name)
+        print(f"Created/found channel: {channel_name} ({channel_id})")
 
-    invite_user_to_channel(user_id, channel_id)
-    post_welcome_message(event_data["event"]["channel"], channel_name, channel_id)
-    post_summary_message(channel_id, summary)
+        invite_user_to_channel(user_id, channel_id)
+        post_welcome_message(event_data["event"]["channel"], channel_name, channel_id)
+        post_summary_message(channel_id, summary)
+        
+        print(f"Successfully processed fire ticket for {issue_key}")
+        
+    except Exception as e:
+        print(f"Error processing fire ticket {issue_key}: {e}")
+        raise
 
 # --- JIRA AND GEMINI FUNCTIONS ---
 def fetch_jira_data(issue_key):
@@ -94,8 +111,47 @@ def fetch_jira_data(issue_key):
 def parse_jira_ticket(ticket):
     fields = ticket.get("fields", {})
     summary = fields.get(JIRA_SUMMARY_FIELD, "")
-    description = fields.get("description", "")
+    
+    # Handle Jira description which might be in ADF format
+    description_field = fields.get("description", "")
+    description = ""
+    
+    if isinstance(description_field, dict):
+        # ADF format - extract text content
+        description = extract_text_from_adf(description_field)
+    elif isinstance(description_field, str):
+        # Plain text
+        description = description_field
+    
     return {"summary": summary, "description": description}
+
+def extract_text_from_adf(adf_content):
+    """Extract plain text from Atlassian Document Format (ADF)"""
+    if not isinstance(adf_content, dict):
+        return str(adf_content)
+    
+    text_parts = []
+    
+    def extract_text_recursive(node):
+        if isinstance(node, dict):
+            # If it's a text node, extract the text
+            if node.get("type") == "text":
+                text_parts.append(node.get("text", ""))
+            
+            # Recursively process content and other children
+            for key in ["content", "marks", "attrs"]:
+                if key in node and isinstance(node[key], (list, dict)):
+                    if isinstance(node[key], list):
+                        for item in node[key]:
+                            extract_text_recursive(item)
+                    else:
+                        extract_text_recursive(node[key])
+        elif isinstance(node, list):
+            for item in node:
+                extract_text_recursive(item)
+    
+    extract_text_recursive(adf_content)
+    return " ".join(text_parts).strip()
 
 def generate_gemini_summary(data):
     """Generates a summary of a Jira ticket using the Gemini API."""
@@ -112,17 +168,17 @@ Description:
 Please provide a concise summary in plain English suitable for a Slack incident channel."""
 
         response = model.generate_content(prompt)
-
-        if response.parts:
-            summary_text = ''.join(part.text for part in response.parts)
-        else:
-            summary_text = getattr(response, 'text', '')
-
-        if not summary_text:
-            print("Empty Gemini response")
-            return "Gemini summary could not be generated."
-
-        return summary_text.strip()
+        
+        # Updated response handling for current API
+        if hasattr(response, 'text') and response.text:
+            return response.text.strip()
+        elif response.parts:
+            summary_text = ''.join(part.text for part in response.parts if hasattr(part, 'text'))
+            if summary_text:
+                return summary_text.strip()
+        
+        print("Empty Gemini response")
+        return "Gemini summary could not be generated."
 
     except Exception as e:
         print(f"Error generating Gemini summary: {e}")
