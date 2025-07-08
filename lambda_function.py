@@ -12,7 +12,13 @@ JIRA_API_TOKEN = os.environ["JIRA_API_TOKEN"]
 JIRA_DOMAIN = os.environ["JIRA_DOMAIN"]
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 
-client = OpenAI()  # Do NOT pass api_key here, pass it in the request instead
+client = OpenAI()
+...
+response = client.chat.completions.create(
+    model="gpt-4",
+    messages=[...],
+    api_key=os.environ["OPENAI_API_KEY"]
+)
 
 SLACK_HEADERS = {
     "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
