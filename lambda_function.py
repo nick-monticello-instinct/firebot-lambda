@@ -109,6 +109,20 @@ Please provide a concise summary in plain English suitable for a Slack incident 
         return "Gemini summary could not be generated."
 
 def create_incident_channel(base_name, attempt=0):
+    # First, try to find an existing public channel with the same name
+    list_response = requests.get(
+        "https://slack.com/api/conversations.list",
+        headers=SLACK_HEADERS,
+        params={"exclude_archived": "true", "limit": 1000}  # Adjust limit as needed
+    ).json()
+
+    if list_response.get("ok"):
+        for channel in list_response.get("channels", []):
+            if channel["name"] == base_name:
+                print(f"Channel '{base_name}' already exists. Reusing.")
+                return channel["id"], channel["name"]
+
+    # If not found, attempt to create
     name = base_name if attempt == 0 else f"{base_name}-{attempt}"
     response = requests.post(
         "https://slack.com/api/conversations.create",
@@ -121,7 +135,7 @@ def create_incident_channel(base_name, attempt=0):
     elif response.get("error") == "name_taken" and attempt < 10:
         return create_incident_channel(base_name, attempt + 1)
     else:
-        raise Exception(f"Failed to create channel: {response}")
+        raise Exception(f"Failed to create or find channel: {response}")
 
 def invite_user_to_channel(user_id, channel_id):
     response = requests.post("https://slack.com/api/conversations.invite", headers=SLACK_HEADERS, json={
