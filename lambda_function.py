@@ -112,9 +112,10 @@ Description:
 
 Please provide a concise summary in plain English suitable for a Slack incident channel."""
 
-        model_name = os.environ.get("GEMINI_MODEL", "gemini-pro")
+        model_name = os.environ.get("GEMINI_MODEL", "gemini-pro")  # Do NOT prefix with "models/"
         model = genai.GenerativeModel(model_name)
-        response = model.generate_content([prompt])
+        convo = model.start_chat()
+        response = convo.send_message(prompt)
 
         if not response or not response.text:
             print("Empty Gemini response")
