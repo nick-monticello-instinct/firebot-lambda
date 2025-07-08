@@ -1,0 +1,31 @@
+name: Build Lambda Package
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies into build dir
+        run: |
+          pip install -r requirements.txt -t python/
+          cp lambda_function.py python/
+          cd python && zip -r ../lambda_package.zip .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: lambda-package
+          path: lambda_package.zip
