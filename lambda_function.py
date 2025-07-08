@@ -1,6 +1,3 @@
-Of course. Here is the complete, corrected file with the `google-genai` library and all the necessary cleanup applied.
-
-```python
 import json
 import os
 import re
@@ -195,4 +192,3 @@ def post_summary_message(channel_id, summary):
     ).json()
     if not response.get("ok"):
         print(f"Error posting summary message: {response.get('error')}")
-```
