@@ -13,15 +13,20 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Build Lambda package in Docker
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install zip (required for packaging)
+        run: sudo apt-get update && sudo apt-get install -y zip
+
+      - name: Install dependencies into build dir
         run: |
-          docker run --rm -v "$PWD:/app" -w /app python:3.11-slim bash -c "
-            apt-get update && apt-get install -y zip &&
-            pip install --upgrade pip &&
-            pip install --no-cache-dir -r requirements.txt -t python &&
-            cp lambda_function.py python &&
-            cd python && zip -r ../lambda_package.zip .
-          "
+          pip install --upgrade pip
+          pip install -r requirements.txt -t python/
+          cp lambda_function.py python/
+          cd python && zip -r ../lambda_package.zip .
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
