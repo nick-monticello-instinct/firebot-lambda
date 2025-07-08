@@ -23,7 +23,7 @@ if GEMINI_MODEL in MODEL_MAPPING:
     GEMINI_MODEL = MODEL_MAPPING[GEMINI_MODEL]
     print(f"Mapped model to: {GEMINI_MODEL}")
 
-JIRA_HOSPITAL_FIELD = os.environ.get("JIRA_HOSPITAL_FIELD", "customfield_12345")
+JIRA_HOSPITAL_FIELD = os.environ.get("JIRA_HOSPITAL_FIELD", "customfield_10348")
 JIRA_SUMMARY_FIELD = "customfield_10250"
 
 # --- SLACK PERMISSIONS REQUIRED ---
@@ -165,9 +165,13 @@ def process_fire_ticket(event_data, user_id):
         summary = generate_gemini_summary(parsed_data)
         print(f"Generated summary length: {len(summary)}")
 
+        # Extract hospital name and format for channel name
+        hospital_name = extract_hospital_name(ticket)
+        hospital_slug = format_hospital_for_channel(hospital_name)
+        
         date_str = datetime.datetime.now().strftime("%Y%m%d")
         channel_slug = issue_key.lower()
-        base_channel_name = f"incident-{channel_slug}-{date_str}"
+        base_channel_name = f"incident-{channel_slug}-{date_str}-{hospital_slug}"
         
         channel_id, channel_name = create_incident_channel(base_channel_name)
         print(f"Created/found channel: {channel_name} ({channel_id})")
@@ -266,6 +270,60 @@ def extract_creator_info(ticket):
     except Exception as e:
         print(f"Error extracting creator info: {e}")
         return None
+
+def extract_hospital_name(ticket):
+    """Extract hospital name from Jira ticket"""
+    try:
+        fields = ticket.get("fields", {})
+        hospital_field = fields.get(JIRA_HOSPITAL_FIELD)
+        
+        # Handle different field formats
+        if isinstance(hospital_field, dict):
+            # For select fields or complex objects, try to get the display name or value
+            hospital_name = hospital_field.get("displayName") or hospital_field.get("value") or hospital_field.get("name", "")
+        elif isinstance(hospital_field, str):
+            # For simple text fields
+            hospital_name = hospital_field
+        else:
+            hospital_name = ""
+            
+        print(f"Extracted hospital name: '{hospital_name}' from field {JIRA_HOSPITAL_FIELD}")
+        return hospital_name or "unknown"
+        
+    except Exception as e:
+        print(f"Error extracting hospital name: {e}")
+        return "unknown"
+
+def format_hospital_for_channel(hospital_name):
+    """Format hospital name for Slack channel naming"""
+    if not hospital_name or hospital_name == "unknown":
+        return "unknown"
+    
+    # Convert to lowercase and replace spaces and special characters
+    formatted = hospital_name.lower()
+    
+    # Replace spaces and common punctuation with hyphens
+    formatted = re.sub(r'[\s&.,()\'"/\\]+', '-', formatted)
+    
+    # Remove any characters that aren't alphanumeric or hyphens
+    formatted = re.sub(r'[^a-z0-9-]', '', formatted)
+    
+    # Remove multiple consecutive hyphens
+    formatted = re.sub(r'-+', '-', formatted)
+    
+    # Remove leading/trailing hyphens
+    formatted = formatted.strip('-')
+    
+    # Limit length to keep channel name reasonable (Slack has 80 char limit total)
+    if len(formatted) > 20:
+        formatted = formatted[:20].rstrip('-')
+    
+    # Ensure it's not empty
+    if not formatted:
+        formatted = "unknown"
+    
+    print(f"Formatted hospital name '{hospital_name}' to '{formatted}'")
+    return formatted
 
 def analyze_missing_information(parsed_data, full_ticket):
     """Use Gemini to analyze what information might be missing from the incident"""
@@ -632,7 +690,8 @@ def check_incident_already_processed(issue_key):
     """Check if this incident has already been processed by looking for existing active channel"""
     try:
         date_str = datetime.datetime.now().strftime("%Y%m%d")
-        base_channel_name = f"incident-{issue_key.lower()}-{date_str}"
+        # Create pattern to match channels for this incident (with any hospital name)
+        incident_pattern = f"incident-{issue_key.lower()}-{date_str}-"
         
         response = requests.get(
             "https://slack.com/api/conversations.list",
@@ -646,10 +705,9 @@ def check_incident_already_processed(issue_key):
 
         existing_channels = {c["name"]: c for c in response.get("channels", [])}
         
-        # Check if base channel or any numbered version exists and is active
+        # Check if any channel matching this incident pattern exists and is active
         for channel_name, channel in existing_channels.items():
-            if (channel_name == base_channel_name or 
-                channel_name.startswith(f"{base_channel_name}-")):
+            if channel_name.startswith(incident_pattern):
                 if not channel.get("is_archived"):
                     print(f"Found existing active channel: {channel_name}")
                     # Check if channel has recent activity (last 5 minutes)
