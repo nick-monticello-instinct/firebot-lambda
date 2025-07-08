@@ -82,11 +82,16 @@ def process_fire_ticket(event_data, user_id):
     post_summary_message(channel_id, summary)
 
 def fetch_jira_data(issue_key):
-    return requests.get(
-        f"https://{JIRA_DOMAIN}/rest/api/3/issue/{issue_key}",
+    url = f"https://{JIRA_DOMAIN}/rest/api/3/issue/{issue_key}"
+    print(f"Fetching Jira ticket from URL: {url}")
+    response = requests.get(
+        url,
         auth=(JIRA_USERNAME, JIRA_API_TOKEN),
         headers={"Accept": "application/json"}
     )
+    print("Jira response status:", response.status_code)
+    print("Jira response body:", response.text)
+    return response
 
 def parse_jira_ticket(ticket):
     fields = ticket.get("fields", {})
