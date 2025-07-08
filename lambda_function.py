@@ -66,8 +66,7 @@ def process_fire_ticket(event_data, user_id):
     summary = generate_gemini_summary(parsed)
 
     date_str = datetime.datetime.now().strftime("%Y%m%d")
-    channel_slug = issue_key.lower()
-    base_channel_name = f"incident-{channel_slug}-{date_str}"
+    base_channel_name = f"incident-{issue_key.lower()}-{date_str}"
     channel_id, channel_name = create_incident_channel(base_channel_name)
 
     invite_user_to_channel(user_id, channel_id)
@@ -110,11 +109,11 @@ Please provide a concise summary in plain English suitable for a Slack incident 
         return "Gemini summary could not be generated."
 
 def create_incident_channel(base_name, attempt=0):
-    # First, try to find an existing public channel with the same name
+    # Check for existing non-archived public channel
     list_response = requests.get(
         "https://slack.com/api/conversations.list",
         headers=SLACK_HEADERS,
-        params={"exclude_archived": "true", "limit": 1000}  # Adjust limit as needed
+        params={"exclude_archived": "true", "types": "public_channel", "limit": 1000}
     ).json()
 
     if list_response.get("ok"):
