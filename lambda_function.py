@@ -252,7 +252,7 @@ def analyze_missing_information(parsed_data, full_ticket):
         created = fields.get("created", "Unknown")
         
         # Create a comprehensive analysis prompt
-        prompt = f"""You are an expert incident response analyst. Analyze this Jira incident ticket and identify what critical information might be missing for effective incident resolution.
+        prompt = f"""You are a supportive incident response assistant working with a fun veterinary software company. Analyze this Jira incident ticket to help identify what additional information might be helpful for faster resolution.
 
 TICKET DETAILS:
 Priority: {priority}
@@ -263,21 +263,21 @@ Summary: {parsed_data['summary']}
 
 Description: {parsed_data['description']}
 
-Please analyze this incident and identify:
-1. What critical information is missing that would help developers resolve this faster?
-2. What additional context would be valuable?
-3. Are there any obvious gaps in the incident report?
+Please provide a supportive analysis that identifies:
+1. What additional information might help our development team resolve this more efficiently?
+2. What context could be valuable to have on hand?
+3. Are there any helpful details that could speed up the resolution process?
 
-Focus on practical, actionable information like:
-- Reproduction steps
-- Error messages/logs
-- Environment details (prod/staging/dev)
-- Impact assessment (how many users affected)
-- Recent changes or deployments
-- Screenshots or examples
-- Urgency context
+Focus on practical information that would be great to have, such as:
+- Steps to reproduce the issue
+- Any error messages or logs
+- Environment context (production/staging/development)
+- Impact scope (how many users or clinics affected)
+- Recent changes or deployments that might be related
+- Screenshots or examples if available
+- Any urgency context
 
-Provide a concise analysis in a helpful, professional tone. Be specific about what's missing rather than generic."""
+Write this in a collaborative, supportive tone that recognizes the reporter did great work filing the ticket and we're just looking to gather additional context that might help. Keep it friendly and professional - we're all on the same team working to help veterinary practices!
 
         fallback_models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
         models_to_try = [GEMINI_MODEL] + [m for m in fallback_models if m != GEMINI_MODEL]
@@ -337,7 +337,7 @@ def generate_creator_outreach_message(creator_info, missing_info_analysis, issue
         creator_name = creator_info.get("display_name", "").split()[0] if creator_info.get("display_name") else "there"
         user_mention = f"<@{slack_user_id}>" if slack_user_id else creator_name
         
-        prompt = f"""You are a helpful incident response bot. Generate a professional, friendly message to reach out to the person who created incident ticket {issue_key}.
+        prompt = f"""You are a helpful incident response bot for a fun veterinary software company. Generate a friendly, supportive message to reach out to the person who created incident ticket {issue_key}.
 
 CREATOR INFO:
 Name: {creator_name}
@@ -346,15 +346,16 @@ MISSING INFORMATION ANALYSIS:
 {missing_info_analysis}
 
 Create a message that:
-1. Greets them professionally and thanks them for reporting the incident
-2. Lets them know a developer is on the way to help
-3. Mentions the specific information that would be helpful (based on the analysis)
+1. Thanks them for reporting the incident and acknowledges their great work
+2. Lets them know a developer is on the way to help  
+3. Mentions the specific information that would be helpful (based on the analysis) in a collaborative way
 4. Asks if they have any additional context that might speed up resolution
-5. Is encouraging and supportive (incidents can be stressful)
+5. Is encouraging and supportive - remember incidents can be stressful and they're trying their best
+6. Keeps the tone friendly and cooperative - we're all on the same team helping veterinary practices
 
-Keep it conversational but professional. Use their first name if available. Make it clear this is automated assistance to help get them faster resolution.
+Keep it conversational, supportive, and professional. Make it clear this is automated assistance to help get them faster resolution.
 
-The message should be suitable for posting in a Slack channel. Don't include channel mentions or formatting beyond basic Slack markdown."""
+The message should be suitable for posting in a Slack channel. Don't include the person's name at the beginning of the message since it will be mentioned separately. Don't include channel mentions or formatting beyond basic Slack markdown."""
 
         fallback_models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
         models_to_try = [GEMINI_MODEL] + [m for m in fallback_models if m != GEMINI_MODEL]
@@ -383,11 +384,11 @@ The message should be suitable for posting in a Slack channel. Don't include cha
                 continue
         
         # Fallback message if AI fails
-        return f"{user_mention} Hi {creator_name}! Thanks for reporting incident {issue_key}. A developer is on the way to help. If you have any additional details, error messages, or context that might help us resolve this faster, please share them here. We're working to get this resolved as quickly as possible!"
+        return f"{user_mention} Thanks for reporting incident {issue_key}! You did great work getting this submitted. A developer is on the way to help. If you have any additional details, error messages, or context that might help us resolve this faster, please share them here. We're working to get this resolved as quickly as possible!"
         
     except Exception as e:
         print(f"Error generating outreach message: {e}")
-        return f"Hi! Thanks for reporting incident {issue_key}. A developer is on the way to help. Please share any additional details that might help us resolve this faster."
+        return f"Thanks for reporting incident {issue_key}! You did great work getting this submitted. A developer is on the way to help. Please share any additional details that might help us resolve this faster."
 
 def post_creator_outreach_message(channel_id, message, slack_user_id):
     """Post the outreach message to the incident channel"""
