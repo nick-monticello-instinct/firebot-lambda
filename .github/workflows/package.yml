@@ -21,6 +21,10 @@ jobs:
       - name: Install zip (required for packaging)
         run: sudo apt-get update && sudo apt-get install -y zip
 
+      - name: Clear Python cache
+        run: |
+          rm -rf ~/.cache/pip
+          
       - name: Install dependencies into build dir
         run: |
           pip install --upgrade pip
