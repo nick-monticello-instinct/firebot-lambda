@@ -128,27 +128,42 @@ Please provide a concise summary in plain English suitable for a Slack incident 
         return "Gemini summary could not be generated."
         
 def create_incident_channel(base_name):
-    # Always search for existing channels that contain this base name
-    print(f"Looking for channel starting with: {base_name}")
+    name = base_name.lower()
 
+    # First, try to find the channel (including archived)
     list_response = requests.get(
         "https://slack.com/api/conversations.list",
         headers=SLACK_HEADERS,
-        params={"exclude_archived": "true", "limit": 1000}
+        params={
+            "exclude_archived": "false",  # include archived
+            "limit": 1000
+        }
     ).json()
 
     if list_response.get("ok"):
         for channel in list_response.get("channels", []):
-            if channel["name"].startswith(base_name):
-                print(f"Found existing channel matching base: {channel['name']}")
+            if channel["name"] == name:
+                print(f"Channel '{name}' already exists.")
+
+                if channel.get("is_archived"):
+                    print(f"Channel '{name}' is archived. Unarchiving...")
+                    unarchive = requests.post(
+                        "https://slack.com/api/conversations.unarchive",
+                        headers=SLACK_HEADERS,
+                        json={"channel": channel["id"]}
+                    ).json()
+                    if not unarchive.get("ok"):
+                        raise Exception(f"Failed to unarchive channel: {unarchive}")
+                    print(f"Channel '{name}' unarchived.")
+
                 return channel["id"], channel["name"]
 
-    # If not found, create one
-    print(f"No existing channel found. Creating new: {base_name}")
+    # If not found, create a new one
+    print(f"No existing channel found. Creating new: {name}")
     response = requests.post(
         "https://slack.com/api/conversations.create",
         headers=SLACK_HEADERS,
-        json={"name": base_name, "is_private": False}
+        json={"name": name, "is_private": False}
     ).json()
 
     if response.get("ok"):
