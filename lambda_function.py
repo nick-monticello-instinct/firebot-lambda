@@ -277,7 +277,7 @@ Focus on practical information that would be great to have, such as:
 - Screenshots or examples if available
 - Any urgency context
 
-Write this in a collaborative, supportive tone that recognizes the reporter did great work filing the ticket and we're just looking to gather additional context that might help. Keep it friendly and professional - we're all on the same team working to help veterinary practices!
+Write this in a collaborative, supportive tone that recognizes the reporter did great work filing the ticket and we're just looking to gather additional context that might help. Keep it friendly and professional - we're all on the same team working to help veterinary practices!"""
 
         fallback_models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
         models_to_try = [GEMINI_MODEL] + [m for m in fallback_models if m != GEMINI_MODEL]
