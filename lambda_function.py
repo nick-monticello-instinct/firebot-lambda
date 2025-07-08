@@ -12,7 +12,7 @@ JIRA_USERNAME = os.environ["JIRA_USERNAME"]
 JIRA_API_TOKEN = os.environ["JIRA_API_TOKEN"]
 JIRA_DOMAIN = os.environ["JIRA_DOMAIN"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "models/gemini-pro")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-pro")
 JIRA_HOSPITAL_FIELD = os.environ.get("JIRA_HOSPITAL_FIELD", "customfield_12345")
 JIRA_SUMMARY_FIELD = "customfield_10250"  # Custom summary form
 
@@ -112,7 +112,7 @@ Description:
 
 Please provide a concise summary in plain English suitable for a Slack incident channel."""
 
-        model_name = os.environ.get("GEMINI_MODEL", "models/gemini-pro")
+        model_name = os.environ.get("GEMINI_MODEL", "gemini-pro")
         model = genai.GenerativeModel(model_name)
         response = model.generate_content(prompt)
         return response.text.strip()
