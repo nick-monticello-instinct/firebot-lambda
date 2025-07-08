@@ -3,24 +3,23 @@ import os
 import re
 import datetime
 import requests
-from openai import OpenAI  # Requires openai>=1.0.0
+import google.generativeai as genai  # Gemini SDK
 
 # ENVIRONMENT VARIABLES
 SLACK_BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
 JIRA_USERNAME = os.environ["JIRA_USERNAME"]
 JIRA_API_TOKEN = os.environ["JIRA_API_TOKEN"]
 JIRA_DOMAIN = os.environ["JIRA_DOMAIN"]
-OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
+GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 JIRA_HOSPITAL_FIELD = os.environ.get("JIRA_HOSPITAL_FIELD", "customfield_12345")
 
-# Set up OpenAI client with the API key at init (only here)
-client = OpenAI(api_key=OPENAI_API_KEY)
+# Configure Gemini client
+genai.configure(api_key=GEMINI_API_KEY)
 
 SLACK_HEADERS = {
     "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
     "Content-Type": "application/json"
 }
-
 
 def lambda_handler(event, context=None):
     try:
@@ -28,7 +27,6 @@ def lambda_handler(event, context=None):
         if event.get("body"):
             body = json.loads(event["body"])
 
-            # Slack URL verification
             if body.get("type") == "url_verification":
                 return {
                     "statusCode": 200,
@@ -48,7 +46,6 @@ def lambda_handler(event, context=None):
         print("Unhandled exception in lambda_handler:", e)
         return {"statusCode": 500, "body": str(e)}
 
-
 def process_fire_ticket(event_data, user_id):
     text = event_data["event"]["text"]
     issue_match = re.search(r"(ISD-\d+)", text)
@@ -64,17 +61,16 @@ def process_fire_ticket(event_data, user_id):
 
     ticket = jira_data.json()
     parsed = parse_jira_ticket(ticket)
-    summary = generate_gpt_summary(parsed)
+    summary = generate_gemini_summary(parsed)
 
     date_str = datetime.datetime.now().strftime("%Y%m%d")
-    channel_slug = re.sub(r"[^a-z0-9\-]", "", parsed["hospital"].lower())
+    channel_slug = re.sub(r"[^a-z0-9\-]", "", str(parsed["hospital"]).lower())
     base_channel_name = f"incident-{date_str}-{channel_slug}"
     channel_id, channel_name = create_incident_channel(base_channel_name)
 
     invite_user_to_channel(user_id, channel_id)
     post_welcome_message(event_data["event"]["channel"], channel_name)
     post_summary_message(channel_id, summary)
-
 
 def fetch_jira_data(issue_key):
     return requests.get(
@@ -83,7 +79,6 @@ def fetch_jira_data(issue_key):
         headers={"Accept": "application/json"}
     )
 
-
 def parse_jira_ticket(ticket):
     fields = ticket.get("fields", {})
     hospital = fields.get(JIRA_HOSPITAL_FIELD, "unknown-hospital")
@@ -91,8 +86,7 @@ def parse_jira_ticket(ticket):
     description = fields.get("description", "")
     return {"hospital": hospital, "summary": summary, "description": description}
 
-
-def generate_gpt_summary(data):
+def generate_gemini_summary(data):
     try:
         prompt = f"""You are a helpful assistant summarizing incident tickets.
 
@@ -104,23 +98,13 @@ Description:
 
 Please provide a concise summary in plain English suitable for a Slack incident channel."""
 
-        model = os.environ.get("OPENAI_MODEL", "gpt-3.5-turbo")
-
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": "You summarize Jira incidents for engineers."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.5
-        )
-
-        return response.choices[0].message.content.strip()
+        model = genai.GenerativeModel("gemini-pro")
+        response = model.generate_content(prompt)
+        return response.text.strip()
 
     except Exception as e:
-        print("Error generating GPT summary:", e)
-        return "GPT summary could not be generated."
-
+        print("Error generating Gemini summary:", e)
+        return "Gemini summary could not be generated."
 
 def create_incident_channel(base_name, attempt=0):
     name = base_name if attempt == 0 else f"{base_name}-{attempt}"
@@ -137,7 +121,6 @@ def create_incident_channel(base_name, attempt=0):
     else:
         raise Exception(f"Failed to create channel: {response}")
 
-
 def invite_user_to_channel(user_id, channel_id):
     response = requests.post("https://slack.com/api/conversations.invite", headers=SLACK_HEADERS, json={
         "channel": channel_id,
@@ -146,7 +129,6 @@ def invite_user_to_channel(user_id, channel_id):
     if not response.get("ok"):
         print(f"Warning: Could not invite user {user_id} to channel {channel_id}: {response}")
 
-
 def post_welcome_message(source_channel, new_channel_name):
     response = requests.post("https://slack.com/api/chat.postMessage", headers=SLACK_HEADERS, json={
         "channel": source_channel,
@@ -154,7 +136,6 @@ def post_welcome_message(source_channel, new_channel_name):
     })
     if not response.ok:
         print("Error posting welcome message:", response.text)
-
 
 def post_summary_message(channel_id, summary):
     response = requests.post("https://slack.com/api/chat.postMessage", headers=SLACK_HEADERS, json={
