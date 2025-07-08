@@ -18,11 +18,20 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install dependencies into build dir
+      - name: Clean old builds
+        run: rm -rf python lambda_package.zip
+
+      - name: Create isolated venv and install
         run: |
-          pip install -r requirements.txt -t python/
+          python -m venv venv
+          source venv/bin/activate
+          pip install --upgrade pip
+          pip install --no-cache-dir -r requirements.txt -t python/
           cp lambda_function.py python/
           cd python && zip -r ../lambda_package.zip .
+
+      - name: Show contents of zip
+        run: unzip -l lambda_package.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
