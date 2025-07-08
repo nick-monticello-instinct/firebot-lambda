@@ -16,6 +16,7 @@ jobs:
       - name: Build Lambda package in Docker
         run: |
           docker run --rm -v "$PWD:/app" -w /app python:3.11-slim bash -c "
+            apt-get update && apt-get install -y zip &&
             pip install --upgrade pip &&
             pip install --no-cache-dir -r requirements.txt -t python &&
             cp lambda_function.py python &&
