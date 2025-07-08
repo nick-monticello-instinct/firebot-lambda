@@ -127,10 +127,10 @@ Please provide a concise summary in plain English suitable for a Slack incident 
         print("Error generating Gemini summary:", e)
         return "Gemini summary could not be generated."
         
-def create_incident_channel(base_name, attempt=0):
-    name = base_name if attempt == 0 else f"{base_name}-{attempt}"
+def create_incident_channel(base_name):
+    # Always search for existing channels that contain this base name
+    print(f"Looking for channel starting with: {base_name}")
 
-    # First, try to find an existing channel with that exact name
     list_response = requests.get(
         "https://slack.com/api/conversations.list",
         headers=SLACK_HEADERS,
@@ -139,22 +139,20 @@ def create_incident_channel(base_name, attempt=0):
 
     if list_response.get("ok"):
         for channel in list_response.get("channels", []):
-            if channel["name"] == name:
-                print(f"Channel '{name}' already exists. Reusing.")
+            if channel["name"].startswith(base_name):
+                print(f"Found existing channel matching base: {channel['name']}")
                 return channel["id"], channel["name"]
 
-    # Not found — try to create
+    # If not found, create one
+    print(f"No existing channel found. Creating new: {base_name}")
     response = requests.post(
         "https://slack.com/api/conversations.create",
         headers=SLACK_HEADERS,
-        json={"name": name, "is_private": False}
+        json={"name": base_name, "is_private": False}
     ).json()
 
     if response.get("ok"):
         return response["channel"]["id"], response["channel"]["name"]
-    elif response.get("error") == "name_taken" and attempt < 10:
-        print(f"Name '{name}' taken — retrying with new suffix...")
-        return create_incident_channel(base_name, attempt + 1)
     else:
         raise Exception(f"Failed to create or find channel: {response}")
 
