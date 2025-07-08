@@ -26,6 +26,15 @@ if GEMINI_MODEL in MODEL_MAPPING:
 JIRA_HOSPITAL_FIELD = os.environ.get("JIRA_HOSPITAL_FIELD", "customfield_12345")
 JIRA_SUMMARY_FIELD = "customfield_10250"
 
+# --- SLACK PERMISSIONS REQUIRED ---
+# The following Slack OAuth scopes are required for full functionality:
+# - channels:read          (list channels)
+# - channels:write         (create channels)
+# - channels:manage        (invite users to channels)
+# - chat:write            (post messages)
+# - users:read.email      (lookup users by email - required for creator outreach)
+# - users:read            (get user information)
+
 # --- DEDUPLICATION CACHE ---
 # Simple in-memory cache for deduplication (resets on each Lambda cold start)
 processed_events = set()
@@ -165,11 +174,266 @@ def process_fire_ticket(event_data, user_id):
         post_welcome_message(event_data["event"]["channel"], channel_name, channel_id)
         post_summary_message(channel_id, summary)
         
+        # NEW: Analyze ticket for missing information and reach out to creator
+        try:
+            analyze_and_reach_out_to_creator(ticket, channel_id, issue_key)
+        except Exception as e:
+            print(f"Error in ticket analysis and outreach: {e}")
+            # Don't fail the entire process if this step fails
+        
         print(f"Successfully processed fire ticket for {issue_key}")
         
     except Exception as e:
         print(f"Error processing fire ticket {issue_key}: {e}")
         raise
+
+def analyze_and_reach_out_to_creator(ticket, channel_id, issue_key):
+    """Analyze ticket for missing info and reach out to creator"""
+    print(f"Analyzing ticket {issue_key} for missing information...")
+    
+    # Extract creator information from Jira
+    creator_info = extract_creator_info(ticket)
+    if not creator_info:
+        print("Could not extract creator information from ticket")
+        return
+    
+    # Analyze ticket for missing information
+    parsed_data = parse_jira_ticket(ticket)
+    missing_info_analysis = analyze_missing_information(parsed_data, ticket)
+    
+    # Post general analysis to channel for all responders
+    post_incident_analysis_message(channel_id, missing_info_analysis, issue_key)
+    
+    # Find creator in Slack
+    slack_user_id = find_slack_user_by_email(creator_info.get('email'))
+    
+    # Invite creator to the incident channel if found in Slack
+    if slack_user_id:
+        print(f"Inviting ticket creator {slack_user_id} to incident channel")
+        invite_user_to_channel(slack_user_id, channel_id)
+    
+    # Generate and send outreach message
+    outreach_message = generate_creator_outreach_message(
+        creator_info, 
+        missing_info_analysis, 
+        issue_key,
+        slack_user_id
+    )
+    
+    post_creator_outreach_message(channel_id, outreach_message, slack_user_id)
+
+def extract_creator_info(ticket):
+    """Extract creator/reporter information from Jira ticket"""
+    try:
+        fields = ticket.get("fields", {})
+        reporter = fields.get("reporter", {})
+        
+        creator_info = {
+            "display_name": reporter.get("displayName", ""),
+            "email": reporter.get("emailAddress", ""),
+            "account_id": reporter.get("accountId", ""),
+            "username": reporter.get("name", "")  # May not be available in newer Jira
+        }
+        
+        print(f"Extracted creator info: {creator_info}")
+        return creator_info
+        
+    except Exception as e:
+        print(f"Error extracting creator info: {e}")
+        return None
+
+def analyze_missing_information(parsed_data, full_ticket):
+    """Use Gemini to analyze what information might be missing from the incident"""
+    try:
+        # Get additional fields that might be relevant
+        fields = full_ticket.get("fields", {})
+        priority = fields.get("priority", {}).get("name", "Unknown")
+        status = fields.get("status", {}).get("name", "Unknown")
+        created = fields.get("created", "Unknown")
+        
+        # Create a comprehensive analysis prompt
+        prompt = f"""You are an expert incident response analyst. Analyze this Jira incident ticket and identify what critical information might be missing for effective incident resolution.
+
+TICKET DETAILS:
+Priority: {priority}
+Status: {status}
+Created: {created}
+
+Summary: {parsed_data['summary']}
+
+Description: {parsed_data['description']}
+
+Please analyze this incident and identify:
+1. What critical information is missing that would help developers resolve this faster?
+2. What additional context would be valuable?
+3. Are there any obvious gaps in the incident report?
+
+Focus on practical, actionable information like:
+- Reproduction steps
+- Error messages/logs
+- Environment details (prod/staging/dev)
+- Impact assessment (how many users affected)
+- Recent changes or deployments
+- Screenshots or examples
+- Urgency context
+
+Provide a concise analysis in a helpful, professional tone. Be specific about what's missing rather than generic."""
+
+        fallback_models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
+        models_to_try = [GEMINI_MODEL] + [m for m in fallback_models if m != GEMINI_MODEL]
+        
+        for model_name in models_to_try:
+            try:
+                print(f"Analyzing missing information with model: {model_name}")
+                model = genai.GenerativeModel(model_name)
+                response = model.generate_content(prompt)
+                
+                if hasattr(response, 'text') and response.text:
+                    print(f"Successfully analyzed missing information with model: {model_name}")
+                    return response.text.strip()
+                elif response.parts:
+                    analysis_text = ''.join(part.text for part in response.parts if hasattr(part, 'text'))
+                    if analysis_text:
+                        print(f"Successfully analyzed missing information with model: {model_name}")
+                        return analysis_text.strip()
+                
+            except Exception as e:
+                print(f"Error with model {model_name}: {e}")
+                continue
+        
+        return "Could not analyze missing information due to AI service issues."
+        
+    except Exception as e:
+        print(f"Error analyzing missing information: {e}")
+        return "Could not analyze missing information due to an error."
+
+def find_slack_user_by_email(email):
+    """Find Slack user ID by email address"""
+    if not email:
+        return None
+        
+    try:
+        response = requests.get(
+            "https://slack.com/api/users.lookupByEmail",
+            headers=SLACK_HEADERS,
+            params={"email": email}
+        ).json()
+        
+        if response.get("ok"):
+            user_id = response.get("user", {}).get("id")
+            print(f"Found Slack user {user_id} for email {email}")
+            return user_id
+        else:
+            print(f"Could not find Slack user for email {email}: {response.get('error')}")
+            return None
+            
+    except Exception as e:
+        print(f"Error finding Slack user by email: {e}")
+        return None
+
+def generate_creator_outreach_message(creator_info, missing_info_analysis, issue_key, slack_user_id):
+    """Generate a personalized outreach message for the ticket creator"""
+    try:
+        creator_name = creator_info.get("display_name", "").split()[0] if creator_info.get("display_name") else "there"
+        user_mention = f"<@{slack_user_id}>" if slack_user_id else creator_name
+        
+        prompt = f"""You are a helpful incident response bot. Generate a professional, friendly message to reach out to the person who created incident ticket {issue_key}.
+
+CREATOR INFO:
+Name: {creator_name}
+
+MISSING INFORMATION ANALYSIS:
+{missing_info_analysis}
+
+Create a message that:
+1. Greets them professionally and thanks them for reporting the incident
+2. Lets them know a developer is on the way to help
+3. Mentions the specific information that would be helpful (based on the analysis)
+4. Asks if they have any additional context that might speed up resolution
+5. Is encouraging and supportive (incidents can be stressful)
+
+Keep it conversational but professional. Use their first name if available. Make it clear this is automated assistance to help get them faster resolution.
+
+The message should be suitable for posting in a Slack channel. Don't include channel mentions or formatting beyond basic Slack markdown."""
+
+        fallback_models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
+        models_to_try = [GEMINI_MODEL] + [m for m in fallback_models if m != GEMINI_MODEL]
+        
+        for model_name in models_to_try:
+            try:
+                print(f"Generating outreach message with model: {model_name}")
+                model = genai.GenerativeModel(model_name)
+                response = model.generate_content(prompt)
+                
+                if hasattr(response, 'text') and response.text:
+                    message = response.text.strip()
+                    # Add user mention at the beginning
+                    final_message = f"{user_mention} {message}"
+                    print(f"Successfully generated outreach message with model: {model_name}")
+                    return final_message
+                elif response.parts:
+                    message_text = ''.join(part.text for part in response.parts if hasattr(part, 'text'))
+                    if message_text:
+                        final_message = f"{user_mention} {message_text.strip()}"
+                        print(f"Successfully generated outreach message with model: {model_name}")
+                        return final_message
+                
+            except Exception as e:
+                print(f"Error with model {model_name}: {e}")
+                continue
+        
+        # Fallback message if AI fails
+        return f"{user_mention} Hi {creator_name}! Thanks for reporting incident {issue_key}. A developer is on the way to help. If you have any additional details, error messages, or context that might help us resolve this faster, please share them here. We're working to get this resolved as quickly as possible!"
+        
+    except Exception as e:
+        print(f"Error generating outreach message: {e}")
+        return f"Hi! Thanks for reporting incident {issue_key}. A developer is on the way to help. Please share any additional details that might help us resolve this faster."
+
+def post_creator_outreach_message(channel_id, message, slack_user_id):
+    """Post the outreach message to the incident channel"""
+    try:
+        response = requests.post(
+            "https://slack.com/api/chat.postMessage",
+            headers=SLACK_HEADERS,
+            json={
+                "channel": channel_id,
+                "text": message,
+                "unfurl_links": False,
+                "unfurl_media": False
+            }
+        ).json()
+        
+        if response.get("ok"):
+            print("Successfully posted creator outreach message")
+        else:
+            print(f"Error posting creator outreach message: {response.get('error')}")
+            
+    except Exception as e:
+        print(f"Error posting creator outreach message: {e}")
+
+def post_incident_analysis_message(channel_id, analysis, issue_key):
+    """Post general incident analysis to channel for all responders"""
+    try:
+        analysis_message = f":mag: **Incident Analysis for {issue_key}**\n\n{analysis}\n\n*This analysis was automatically generated to help responders understand what information might be needed for faster resolution.*"
+        
+        response = requests.post(
+            "https://slack.com/api/chat.postMessage",
+            headers=SLACK_HEADERS,
+            json={
+                "channel": channel_id,
+                "text": analysis_message,
+                "unfurl_links": False,
+                "unfurl_media": False
+            }
+        ).json()
+        
+        if response.get("ok"):
+            print("Successfully posted incident analysis message")
+        else:
+            print(f"Error posting incident analysis message: {response.get('error')}")
+            
+    except Exception as e:
+        print(f"Error posting incident analysis message: {e}")
 
 # --- JIRA AND GEMINI FUNCTIONS ---
 def fetch_jira_data(issue_key):
