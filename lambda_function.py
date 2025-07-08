@@ -84,7 +84,8 @@ def fetch_jira_data(issue_key):
 
 def parse_jira_ticket(ticket):
     fields = ticket.get("fields", {})
-    hospital = fields.get("customfield_12345", "unknown-hospital")  # Replace with real field ID
+    hospital_field = os.environ.get("JIRA_HOSPITAL_FIELD", "customfield_12345")
+    hospital = fields.get(hospital_field, "unknown-hospital")
     summary = fields.get("summary", "")
     description = fields.get("description", "")
     return {"hospital": hospital, "summary": summary, "description": description}
