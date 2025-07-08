@@ -24,8 +24,9 @@ jobs:
       - name: Clear pip cache
         run: rm -rf ~/.cache/pip
 
-      - name: Install dependencies and package Lambda
+      - name: Install clean dependencies and package Lambda
         run: |
+          rm -rf package/
           pip install --upgrade pip
           pip install -r requirements.txt -t package/
           cp lambda_function.py package/
