@@ -100,8 +100,12 @@ def parse_jira_ticket(ticket):
     description = fields.get("description", "")
     return {"hospital": hospital, "summary": summary, "description": description}
 
+from google.generativeai import GenerativeModel, configure
+
 def generate_gemini_summary(data):
     try:
+        configure(api_key=GEMINI_API_KEY)
+
         prompt = f"""You are a helpful assistant summarizing incident tickets.
 
 Summary:
@@ -112,25 +116,26 @@ Description:
 
 Please provide a concise summary in plain English suitable for a Slack incident channel."""
 
-        model_name = os.environ.get("GEMINI_MODEL", "gemini-pro")  # Do NOT prefix with "models/"
-        model = genai.GenerativeModel(model_name)
-        convo = model.start_chat()
-        response = convo.send_message(prompt)
+        model = GenerativeModel("gemini-pro")
+        response = model.generate_content(prompt)
 
         if not response or not response.text:
             print("Empty Gemini response")
             return "Gemini summary could not be generated."
 
-        return response.text.strip()
+        summary_text = response.text if hasattr(response, "text") else "".join(p.text for p in response.parts)
+        return summary_text.strip()
 
     except Exception as e:
         print("Error generating Gemini summary:", e)
         return "Gemini summary could not be generated."
         
 def create_incident_channel(base_name):
-    name = base_name.lower()
+    original_name = base_name.lower()
+    name_to_try = original_name
+    suffix_attempt = 0
 
-    # First, try to find the channel (including archived)
+    # Fetch all channels, including archived
     list_response = requests.get(
         "https://slack.com/api/conversations.list",
         headers=SLACK_HEADERS,
@@ -140,36 +145,41 @@ def create_incident_channel(base_name):
         }
     ).json()
 
+    existing_channels = {}
     if list_response.get("ok"):
         for channel in list_response.get("channels", []):
-            if channel["name"] == name:
-                print(f"Channel '{name}' already exists.")
+            existing_channels[channel["name"]] = channel
 
-                if channel.get("is_archived"):
-                    print(f"Channel '{name}' is archived. Unarchiving...")
-                    unarchive = requests.post(
-                        "https://slack.com/api/conversations.unarchive",
-                        headers=SLACK_HEADERS,
-                        json={"channel": channel["id"]}
-                    ).json()
-                    if not unarchive.get("ok"):
-                        raise Exception(f"Failed to unarchive channel: {unarchive}")
-                    print(f"Channel '{name}' unarchived.")
+    # Look for an existing non-archived match
+    if original_name in existing_channels:
+        if not existing_channels[original_name].get("is_archived", False):
+            print(f"Found existing active channel: {original_name}")
+            return existing_channels[original_name]["id"], original_name
+        else:
+            print(f"Channel '{original_name}' is archived. Falling back to new name.")
 
-                return channel["id"], channel["name"]
+    # If archived or not found, try fallbacks
+    while True:
+        if name_to_try not in existing_channels:
+            print(f"Creating new channel: {name_to_try}")
+            response = requests.post(
+                "https://slack.com/api/conversations.create",
+                headers=SLACK_HEADERS,
+                json={"name": name_to_try, "is_private": False}
+            ).json()
 
-    # If not found, create a new one
-    print(f"No existing channel found. Creating new: {name}")
-    response = requests.post(
-        "https://slack.com/api/conversations.create",
-        headers=SLACK_HEADERS,
-        json={"name": name, "is_private": False}
-    ).json()
+            if response.get("ok"):
+                return response["channel"]["id"], name_to_try
+            elif response.get("error") == "name_taken":
+                print(f"Channel name '{name_to_try}' is taken. Trying next fallback...")
+            else:
+                raise Exception(f"Failed to create channel: {response}")
 
-    if response.get("ok"):
-        return response["channel"]["id"], response["channel"]["name"]
-    else:
-        raise Exception(f"Failed to create or find channel: {response}")
+        else:
+            print(f"Channel name '{name_to_try}' already exists (likely archived). Trying next fallback...")
+
+        suffix_attempt += 1
+        name_to_try = f"{original_name}-new" if suffix_attempt == 1 else f"{original_name}-new-{suffix_attempt}"
 
 def invite_user_to_channel(user_id, channel_id):
     response = requests.post("https://slack.com/api/conversations.invite", headers=SLACK_HEADERS, json={
