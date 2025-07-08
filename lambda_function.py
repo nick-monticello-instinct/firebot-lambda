@@ -23,7 +23,7 @@ if GEMINI_MODEL in MODEL_MAPPING:
     GEMINI_MODEL = MODEL_MAPPING[GEMINI_MODEL]
     print(f"Mapped model to: {GEMINI_MODEL}")
 
-JIRA_HOSPITAL_FIELD = os.environ.get("JIRA_HOSPITAL_FIELD", "customfield_10348")
+JIRA_HOSPITAL_FIELD = os.environ.get("JIRA_HOSPITAL_FIELD", "customfield_10297")
 JIRA_SUMMARY_FIELD = "customfield_10250"
 
 # --- SLACK PERMISSIONS REQUIRED ---
@@ -275,20 +275,55 @@ def extract_hospital_name(ticket):
     """Extract hospital name from Jira ticket"""
     try:
         fields = ticket.get("fields", {})
+        
+        # Debug: Print available fields that might be hospital related
+        print(f"DEBUG: All available fields in ticket: {list(fields.keys())}")
+        
+        # Look for potential hospital fields
+        hospital_related_fields = [key for key in fields.keys() if 'customfield' in key]
+        print(f"DEBUG: Custom fields in ticket: {hospital_related_fields}")
+        
         hospital_field = fields.get(JIRA_HOSPITAL_FIELD)
+        
+        # Debug: Print the full field structure
+        print(f"DEBUG: Looking for hospital field {JIRA_HOSPITAL_FIELD}")
+        print(f"DEBUG: Raw hospital field value: {hospital_field}")
+        print(f"DEBUG: Type of hospital field: {type(hospital_field)}")
         
         # Handle different field formats
         if isinstance(hospital_field, dict):
-            # For select fields or complex objects, try to get the display name or value
-            hospital_name = hospital_field.get("displayName") or hospital_field.get("value") or hospital_field.get("name", "")
+            # For select fields or complex objects, try different possible keys
+            possible_keys = ["displayName", "value", "name", "key", "id"]
+            hospital_name = ""
+            
+            for key in possible_keys:
+                if key in hospital_field and hospital_field[key]:
+                    hospital_name = str(hospital_field[key])
+                    print(f"DEBUG: Found hospital name '{hospital_name}' using key '{key}'")
+                    break
+            
+            if not hospital_name:
+                print(f"DEBUG: No value found in dict keys: {list(hospital_field.keys())}")
+                
         elif isinstance(hospital_field, str):
             # For simple text fields
             hospital_name = hospital_field
+            print(f"DEBUG: Using string value: '{hospital_name}'")
+        elif isinstance(hospital_field, list) and len(hospital_field) > 0:
+            # For multi-select fields, take the first one
+            first_item = hospital_field[0]
+            if isinstance(first_item, dict):
+                hospital_name = first_item.get("displayName") or first_item.get("value") or first_item.get("name", "")
+            else:
+                hospital_name = str(first_item)
+            print(f"DEBUG: Using first item from list: '{hospital_name}'")
         else:
             hospital_name = ""
+            print(f"DEBUG: Field is empty or unrecognized type")
             
-        print(f"Extracted hospital name: '{hospital_name}' from field {JIRA_HOSPITAL_FIELD}")
-        return hospital_name or "unknown"
+        result = hospital_name.strip() if hospital_name else "unknown"
+        print(f"Final extracted hospital name: '{result}' from field {JIRA_HOSPITAL_FIELD}")
+        return result
         
     except Exception as e:
         print(f"Error extracting hospital name: {e}")
