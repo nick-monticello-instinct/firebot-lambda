@@ -33,16 +33,45 @@ jobs:
           
       - name: Create Lambda package zip
         run: |
+          # Remove any existing zip
+          rm -f lambda_package.zip
+          
+          # Use a simple approach that works reliably for Lambda
           cd package
-          zip -r ../lambda_package.zip . -x "*.pyc" "*/__pycache__/*"
+          zip -r9 ../lambda_package.zip * -x "*.pyc" "*/__pycache__/*" "*.pyo" "*/.DS_Store"
           cd ..
           
       - name: Verify package contents
         run: |
-          echo "=== Lambda package contents ==="
-          unzip -l lambda_package.zip | head -20
+          echo "=== Lambda package file info ==="
+          ls -lh lambda_package.zip
+          echo ""
+          echo "=== Lambda package contents (first 30 entries) ==="
+          unzip -l lambda_package.zip | head -30
+          echo ""
           echo "=== Checking for lambda_function.py at root ==="
-          unzip -l lambda_package.zip | grep "lambda_function.py" || echo "ERROR: lambda_function.py not found at root level"
+          if unzip -l lambda_package.zip | grep -E "^[[:space:]]*[0-9]+[[:space:]]+[0-9-]+[[:space:]]+[0-9:]+[[:space:]]+lambda_function\.py$"; then
+            echo "✅ lambda_function.py found at root level"
+          else
+            echo "❌ ERROR: lambda_function.py not found at root level"
+            echo "Full zip listing:"
+            unzip -l lambda_package.zip
+          fi
+          echo ""
+          echo "=== Testing unzip to temp directory ==="
+          mkdir -p temp_test
+          cd temp_test
+          unzip -q ../lambda_package.zip
+          echo "Contents after unzip:"
+          ls -la
+          if [ -f "lambda_function.py" ]; then
+            echo "✅ lambda_function.py exists at root after unzip"
+          else
+            echo "❌ lambda_function.py missing at root after unzip"
+            find . -name "lambda_function.py" -type f
+          fi
+          cd ..
+          rm -rf temp_test
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
