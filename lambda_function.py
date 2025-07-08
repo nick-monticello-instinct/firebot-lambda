@@ -13,6 +13,7 @@ JIRA_DOMAIN = os.environ["JIRA_DOMAIN"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "models/gemini-pro")
 JIRA_HOSPITAL_FIELD = os.environ.get("JIRA_HOSPITAL_FIELD", "customfield_12345")
+JIRA_SUMMARY_FIELD = "customfield_10250"  # Custom summary form
 
 # Configure Gemini client
 genai.configure(api_key=GEMINI_API_KEY)
@@ -35,8 +36,9 @@ def lambda_handler(event, context=None):
                 }
 
             if body.get("type") == "event_callback":
-                user_id = body["event"]["user"]
-                print("Processing Slack message text:", body["event"].get("text"))
+                user_id = body["event"].get("user")
+                text = body["event"].get("text", "")
+                print("Processing Slack message text:", text)
                 process_fire_ticket(body, user_id)
                 return {"statusCode": 200, "body": "OK"}
 
@@ -47,10 +49,13 @@ def lambda_handler(event, context=None):
         return {"statusCode": 500, "body": str(e)}
 
 def process_fire_ticket(event_data, user_id):
-    issue_key = extract_issue_key(event_data)
-    if not issue_key:
+    text = event_data["event"].get("text", "")
+    issue_match = re.search(r"ISD-(\d{5})", text)
+    if not issue_match:
+        print("No Jira issue key found.")
         return
 
+    issue_key = f"ISD-{issue_match.group(1)}"
     jira_data = fetch_jira_data(issue_key)
     print("Jira API response status:", jira_data.status_code)
     if jira_data.status_code != 200:
@@ -61,34 +66,13 @@ def process_fire_ticket(event_data, user_id):
     summary = generate_gemini_summary(parsed)
 
     date_str = datetime.datetime.now().strftime("%Y%m%d")
-    channel_slug = re.sub(r"[^a-z0-9\-]", "", str(issue_key).lower())
+    channel_slug = issue_key.lower()
     base_channel_name = f"incident-{channel_slug}-{date_str}"
     channel_id, channel_name = create_incident_channel(base_channel_name)
 
     invite_user_to_channel(user_id, channel_id)
     post_welcome_message(event_data["event"]["channel"], channel_name)
     post_summary_message(channel_id, summary)
-
-def extract_issue_key(event_data):
-    text = event_data["event"].get("text", "")
-    match = re.search(r"ISD-\d{5}", text)
-    if match:
-        return match.group(0)
-
-    blocks = event_data["event"].get("blocks", [])
-    for block in blocks:
-        elements = block.get("elements", [])
-        for elem in elements:
-            if elem.get("type") == "rich_text_section":
-                for item in elem.get("elements", []):
-                    if item.get("type") in ["text", "link"]:
-                        text_part = item.get("text", "")
-                        match = re.search(r"ISD-\d{5}", text_part)
-                        if match:
-                            return match.group(0)
-
-    print("No Jira issue key found in text or blocks.")
-    return None
 
 def fetch_jira_data(issue_key):
     return requests.get(
@@ -100,7 +84,7 @@ def fetch_jira_data(issue_key):
 def parse_jira_ticket(ticket):
     fields = ticket.get("fields", {})
     hospital = fields.get(JIRA_HOSPITAL_FIELD, "unknown-hospital")
-    summary = fields.get("summary", "")
+    summary = fields.get(JIRA_SUMMARY_FIELD, "")
     description = fields.get("description", "")
     return {"hospital": hospital, "summary": summary, "description": description}
 
