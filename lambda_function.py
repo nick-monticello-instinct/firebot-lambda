@@ -87,6 +87,15 @@ SLACK_HEADERS = {
 def lambda_handler(event, context=None):
     try:
         print("Incoming event:", json.dumps(event))
+        
+        # Check for Slack retry headers
+        headers = event.get("headers", {})
+        retry_num = headers.get("x-slack-retry-num", "0")
+        retry_reason = headers.get("x-slack-retry-reason", "")
+        
+        if retry_num != "0":
+            print(f"⚠️ Processing Slack retry event - Retry #{retry_num}, Reason: {retry_reason}")
+        
         if event.get("body"):
             body = json.loads(event["body"])
 
@@ -158,12 +167,15 @@ def create_event_id(event_data):
         message_type = f"{message_type}_{subtype}"
     
     # Create identifier based on what really matters: user + channel + issue + timestamp + message type
-    unique_string = f"{channel}_{user}_{issue_key}_{timestamp}_{message_type}"
+    # Also include the Slack event_id if available for better deduplication
+    event_id_from_slack = event_data.get("event_id", "")
+    unique_string = f"{channel}_{user}_{issue_key}_{timestamp}_{message_type}_{event_id_from_slack}"
     event_id = hashlib.md5(unique_string.encode()).hexdigest()[:16]
     
     # Log for debugging with more detail
     print(f"Event deduplication - Channel: {channel}, User: {user}, Issue: {issue_key}, Timestamp: {timestamp}")
     print(f"Message type: {message_type}, Bot ID: {bot_id}, App ID: {app_id}, Subtype: {subtype}")
+    print(f"Slack event_id: {event_id_from_slack}")
     print(f"Generated event ID: {event_id}")
     print(f"Text preview: {text[:100]}..." if len(text) > 100 else f"Text: {text}")
     print(f"Current cache size: {len(processed_events)}")
@@ -196,7 +208,13 @@ def process_fire_ticket(event_data, user_id):
     print(f"Found Jira issue: {issue_key}")
     
     try:
-        # Step 0: Attempt to acquire processing lock by creating coordination message
+        # Step 0: Immediate coordination check - post coordination message to claim ownership
+        coordination_success = attempt_immediate_coordination(issue_key)
+        if not coordination_success:
+            print(f"Another instance is already processing {issue_key}, aborting immediately")
+            return
+        
+        # Step 1: Attempt to acquire processing lock by creating coordination message
         coordination_success = attempt_incident_coordination(issue_key)
         if not coordination_success:
             print(f"Another instance is already processing {issue_key}, aborting")
@@ -300,6 +318,68 @@ def process_fire_ticket(event_data, user_id):
         print(f"Error processing fire ticket {issue_key}: {e}")
         raise
 
+def attempt_immediate_coordination(issue_key):
+    """Immediate coordination check - post coordination message and check for existing ones"""
+    try:
+        # First, check if there's already a coordination message in any channel for this incident
+        date_str = datetime.datetime.now().strftime("%Y%m%d")
+        incident_pattern = f"incident-{issue_key.lower()}-{date_str}-"
+        
+        response = requests.get(
+            "https://slack.com/api/conversations.list",
+            headers=SLACK_HEADERS,
+            params={"exclude_archived": "false", "limit": 1000}
+        ).json()
+
+        if not response.get("ok"):
+            print(f"Warning: Could not list channels for immediate coordination: {response}")
+            return True  # Proceed if we can't check
+            
+        existing_channels = {c["name"]: c for c in response.get("channels", [])}
+        
+        # Check for existing coordination messages in any incident channel
+        for channel_name, channel in existing_channels.items():
+            if channel_name.startswith(incident_pattern) and not channel.get("is_archived"):
+                print(f"Checking existing channel for coordination messages: {channel_name}")
+                
+                # Look for coordination messages in the last 5 minutes
+                five_minutes_ago = datetime.datetime.now() - datetime.timedelta(minutes=5)
+                oldest_timestamp = five_minutes_ago.timestamp()
+                
+                history_response = requests.get(
+                    "https://slack.com/api/conversations.history",
+                    headers=SLACK_HEADERS,
+                    params={
+                        "channel": channel["id"],
+                        "oldest": oldest_timestamp,
+                        "limit": 20
+                    }
+                ).json()
+                
+                if history_response.get("ok"):
+                    messages = history_response.get("messages", [])
+                    bot_user_id = os.environ.get("SLACK_BOT_USER_ID", "U09584DT15X")
+                    
+                    for message in messages:
+                        # Only check messages from our bot
+                        if message.get("user") != bot_user_id and message.get("bot_id") != "B09584DRW4R":
+                            continue
+                            
+                        text = message.get("text", "")
+                        
+                        # If we find a coordination message, another instance is processing
+                        if f"🔄 Processing incident {issue_key}" in text:
+                            print(f"Found existing coordination message for {issue_key}, aborting")
+                            return False
+        
+        # No existing coordination found, proceed with processing
+        print(f"No existing coordination found for {issue_key}, proceeding")
+        return True
+        
+    except Exception as e:
+        print(f"Error in immediate coordination: {e}")
+        return True  # Proceed if coordination fails
+
 def attempt_incident_coordination(issue_key):
     """Attempt to coordinate incident processing across Lambda instances using Slack"""
     try:
@@ -366,6 +446,7 @@ def is_workflow_already_completed(channel_id, issue_key):
         found_summary = False
         found_analysis = False
         found_media = False
+        found_coordination = False
         
         bot_user_id = os.environ.get("SLACK_BOT_USER_ID", "U09584DT15X")
         
@@ -375,6 +456,11 @@ def is_workflow_already_completed(channel_id, issue_key):
                 continue
                 
             text = message.get("text", "")
+            
+            # Check for coordination message (most recent indicator of processing)
+            if f"🔄 Processing incident {issue_key}" in text:
+                found_coordination = True
+                print(f"Found coordination message for {issue_key}")
             
             # Check for workflow completion indicators
             if "*Incident Summary:*" in text:
@@ -391,11 +477,16 @@ def is_workflow_already_completed(channel_id, issue_key):
                 found_media = True
                 print(f"Found media upload message for {issue_key}")
         
+        # If we found coordination message but no summary/analysis, another instance is processing
+        if found_coordination and not found_summary:
+            print(f"Found coordination message but no summary - another instance is processing {issue_key}")
+            return True  # Abort this instance
+        
         # Consider workflow completed if we have summary + analysis
         # (media is optional depending on attachments)
         workflow_completed = found_summary and found_analysis
         
-        print(f"Workflow status for {issue_key}: summary={found_summary}, analysis={found_analysis}, media={found_media}, completed={workflow_completed}")
+        print(f"Workflow status for {issue_key}: coordination={found_coordination}, summary={found_summary}, analysis={found_analysis}, media={found_media}, completed={workflow_completed}")
         
         return workflow_completed
         
