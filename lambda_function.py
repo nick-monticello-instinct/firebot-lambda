@@ -19,6 +19,7 @@ JIRA_USERNAME = os.environ["JIRA_USERNAME"]
 JIRA_API_TOKEN = os.environ["JIRA_API_TOKEN"]
 JIRA_DOMAIN = os.environ["JIRA_DOMAIN"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
+# Optional: SLACK_BOT_USER_ID can be set to help prevent duplicate processing
 # Use a valid model name with fallback
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-1.5-flash")
 # Map old model names to new ones
@@ -144,8 +145,20 @@ def create_event_id(event_data):
 
 # --- CORE LOGIC ---
 def process_fire_ticket(event_data, user_id):
-    text = event_data["event"].get("text", "")
+    event = event_data["event"]
+    text = event.get("text", "")
     print(f"Processing message: {text}")
+    
+    # Skip messages from bots to prevent processing our own messages
+    if event.get("bot_id") or event.get("app_id"):
+        print("Skipping bot message to prevent duplicate processing")
+        return
+    
+    # Additional check: skip if the message is from our specific bot user
+    bot_user_ids = [os.environ.get("SLACK_BOT_USER_ID"), "U09584DT15X"]  # Add known bot user ID as fallback
+    if user_id in [uid for uid in bot_user_ids if uid]:
+        print(f"Skipping message from bot user {user_id} to prevent duplicate processing")
+        return
     
     issue_match = re.search(r"(ISD-\d{5})", text)
     if not issue_match:
@@ -786,7 +799,7 @@ def download_and_process_media(attachments):
     return processed_files
 
 def upload_media_to_slack(media_files, channel_id, issue_key):
-    """Uploads media files to a Slack channel."""
+    """Uploads media files to a Slack channel using the new 2-step upload process."""
     if not media_files:
         print("No media files to upload")
         return []
@@ -800,43 +813,75 @@ def upload_media_to_slack(media_files, channel_id, issue_key):
             mime_type = media_file["mime_type"]
             author = media_file["author"]
             created = media_file["created"]
+            file_size = len(content)
             
-            print(f"Uploading {filename} to Slack channel {channel_id}")
+            print(f"Uploading {filename} to Slack channel {channel_id} using new upload method")
             
-            # Prepare the upload
-            files = {
-                'file': (filename, content, mime_type)
-            }
-            
-            data = {
-                'channels': channel_id,
-                'title': f"Attachment from {issue_key}",
-                'initial_comment': f"📎 **{filename}** (uploaded by {author} on {created[:10]})\nFrom Jira ticket {issue_key}",
-                'filetype': mime_type.split('/')[-1] if '/' in mime_type else 'auto'
-            }
-            
-            # Upload file using files.upload API
-            response = requests.post(
-                "https://slack.com/api/files.upload",
+            # Step 1: Get upload URL
+            print(f"Step 1: Getting upload URL for {filename}")
+            upload_url_response = requests.get(
+                "https://slack.com/api/files.getUploadURLExternal",
                 headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}"},
-                files=files,
-                data=data
+                params={
+                    "filename": filename,
+                    "length": file_size
+                }
             )
             
-            result = response.json()
+            upload_url_result = upload_url_response.json()
             
-            if result.get("ok"):
-                file_info = result.get("file", {})
+            if not upload_url_result.get("ok"):
+                error = upload_url_result.get("error", "unknown error")
+                print(f"Failed to get upload URL for {filename}: {error}")
+                continue
+            
+            upload_url = upload_url_result.get("upload_url")
+            file_id = upload_url_result.get("file_id")
+            
+            print(f"Got upload URL and file ID {file_id} for {filename}")
+            
+            # Step 2: Upload file to the URL
+            print(f"Step 2: Uploading file content for {filename}")
+            upload_response = requests.post(
+                upload_url,
+                files={"file": (filename, content, mime_type)}
+            )
+            
+            if upload_response.status_code != 200:
+                print(f"Failed to upload file content for {filename}: HTTP {upload_response.status_code}")
+                continue
+            
+            print(f"Successfully uploaded file content for {filename}")
+            
+            # Step 3: Complete the upload and share to channel
+            print(f"Step 3: Completing upload and sharing {filename}")
+            initial_comment = f"📎 **{filename}** (uploaded by {author} on {created[:10]})\nFrom Jira ticket {issue_key}"
+            
+            complete_response = requests.post(
+                "https://slack.com/api/files.completeUploadExternal",
+                headers={
+                    "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "files": [{"id": file_id, "title": f"Attachment from {issue_key}"}],
+                    "channel_id": channel_id,
+                    "initial_comment": initial_comment
+                }
+            )
+            
+            complete_result = complete_response.json()
+            
+            if complete_result.get("ok"):
                 uploaded_files.append({
                     "filename": filename,
-                    "slack_file_id": file_info.get("id"),
-                    "permalink": file_info.get("permalink"),
-                    "size": media_file["size"]
+                    "slack_file_id": file_id,
+                    "size": file_size
                 })
-                print(f"Successfully uploaded {filename}")
+                print(f"Successfully completed upload for {filename}")
             else:
-                error = result.get("error", "unknown error")
-                print(f"Failed to upload {filename}: {error}")
+                error = complete_result.get("error", "unknown error")
+                print(f"Failed to complete upload for {filename}: {error}")
                 
         except Exception as e:
             print(f"Error uploading {media_file.get('filename', 'unknown')}: {e}")
