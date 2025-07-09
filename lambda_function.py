@@ -404,12 +404,21 @@ def process_firebot_command(event_data, user_id):
         
         # Create a unique cache key for this firebot command to prevent duplicates
         command_cache_key = f"firebot_{channel_id}_{text}"
+        processing_key = f"processing_{channel_id}_{text}"
+        
+        # Check if already processed
         if command_cache_key in processed_events:
             print(f"Firebot command already processed: {text}")
             return
         
-        # Mark command as processed immediately to prevent duplicates
-        processed_events.add(command_cache_key)
+        # Check if currently being processed
+        if processing_key in processed_events:
+            print(f"Firebot command currently being processed: {text}")
+            return
+        
+        # Mark as being processed immediately
+        processed_events.add(processing_key)
+        print(f"Marked firebot command as processing: {text}")
         
         # Use a simpler approach - just rely on the cache for firebot commands
         # since they're quick operations and don't need the full DynamoDB coordination
@@ -430,9 +439,16 @@ def process_firebot_command(event_data, user_id):
         else:
             print(f"Unknown firebot command: {command}")
             post_firebot_help(channel_id)
+        
+        # Mark command as completed
+        processed_events.add(command_cache_key)
+        processed_events.discard(processing_key)
+        print(f"Marked firebot command as completed: {text}")
             
     except Exception as e:
         print(f"Error processing firebot command: {e}")
+        # Remove processing flag on error
+        processed_events.discard(processing_key)
 
 def handle_firebot_summary(channel_id, user_id):
     """Generate a comprehensive summary of the incident channel"""
