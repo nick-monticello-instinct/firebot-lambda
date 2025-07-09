@@ -1877,12 +1877,69 @@ def create_atomic_lock_channel(channel_name, issue_key):
         if create_response.get("ok"):
             print(f"Successfully created atomic lock channel: {channel_name}")
             return True
+        elif create_response.get("error") == "name_taken":
+            # Lock channel already exists, check if it's recent (within last 5 minutes)
+            print(f"Lock channel {channel_name} already exists, checking if it's recent")
+            if is_lock_channel_recent(channel_name):
+                print(f"Lock channel {channel_name} is recent, another instance is processing")
+                return False
+            else:
+                print(f"Lock channel {channel_name} is old, cleaning up and proceeding")
+                cleanup_temp_lock_channel(channel_name)
+                # Try to create again after cleanup
+                retry_response = requests.post(
+                    "https://slack.com/api/conversations.create",
+                    headers=SLACK_HEADERS,
+                    json={"name": channel_name, "is_private": False}
+                ).json()
+                
+                if retry_response.get("ok"):
+                    print(f"Successfully created atomic lock channel after cleanup: {channel_name}")
+                    return True
+                else:
+                    print(f"Failed to create atomic lock channel after cleanup: {retry_response.get('error')}")
+                    return False
         else:
             print(f"Failed to create atomic lock channel {channel_name}: {create_response.get('error')}")
             return False
     except Exception as e:
         print(f"Error creating atomic lock channel: {e}")
         return False
+
+def is_lock_channel_recent(channel_name):
+    """Check if a lock channel was created recently (within last 5 minutes)"""
+    try:
+        # Get channel info to check creation time
+        response = requests.get(
+            "https://slack.com/api/conversations.list",
+            headers=SLACK_HEADERS,
+            params={"exclude_archived": "false", "limit": 1000}
+        ).json()
+        
+        if not response.get("ok"):
+            print(f"Could not list channels to check lock age: {response.get('error')}")
+            return True  # Assume recent if we can't check
+        
+        channels = response.get("channels", [])
+        for channel in channels:
+            if channel.get("name") == channel_name:
+                created_timestamp = channel.get("created", 0)
+                if created_timestamp:
+                    created_time = datetime.datetime.fromtimestamp(created_timestamp)
+                    now = datetime.datetime.now()
+                    age = now - created_time
+                    
+                    # Consider recent if less than 5 minutes old
+                    is_recent = age.total_seconds() < 300  # 5 minutes
+                    print(f"Lock channel {channel_name} age: {age}, is_recent: {is_recent}")
+                    return is_recent
+        
+        print(f"Lock channel {channel_name} not found in channel list")
+        return False
+        
+    except Exception as e:
+        print(f"Error checking lock channel age: {e}")
+        return True  # Assume recent if we can't check
 
 def cleanup_temp_lock_channel(channel_name):
     """Deletes the temporary channel used for atomic lock."""
@@ -1892,22 +1949,32 @@ def cleanup_temp_lock_channel(channel_name):
         response = requests.get(
             "https://slack.com/api/conversations.list",
             headers=SLACK_HEADERS,
-            params={"name": channel_name, "exclude_archived": "false", "limit": 1}
+            params={"exclude_archived": "false", "limit": 1000}
         ).json()
 
-        if response.get("ok") and response.get("channels") and response["channels"][0].get("id"):
-            channel_id = response["channels"][0]["id"]
-            delete_response = requests.post(
-                "https://slack.com/api/conversations.delete",
-                headers=SLACK_HEADERS,
-                json={"channel_id": channel_id}
-            ).json()
+        if response.get("ok"):
+            channels = response.get("channels", [])
+            channel_id = None
+            
+            for channel in channels:
+                if channel.get("name") == channel_name:
+                    channel_id = channel.get("id")
+                    break
+            
+            if channel_id:
+                delete_response = requests.post(
+                    "https://slack.com/api/conversations.delete",
+                    headers=SLACK_HEADERS,
+                    json={"channel_id": channel_id}
+                ).json()
 
-            if delete_response.get("ok"):
-                print(f"Successfully deleted atomic lock channel: {channel_name}")
+                if delete_response.get("ok"):
+                    print(f"Successfully deleted atomic lock channel: {channel_name}")
+                else:
+                    print(f"Failed to delete atomic lock channel {channel_name}: {delete_response.get('error')}")
             else:
-                print(f"Failed to delete atomic lock channel {channel_name}: {delete_response.get('error')}")
+                print(f"Atomic lock channel {channel_name} not found in channel list")
         else:
-            print(f"Atomic lock channel {channel_name} not found or could not retrieve ID.")
+            print(f"Could not list channels to find lock channel: {response.get('error')}")
     except Exception as e:
         print(f"Error cleaning up atomic lock channel: {e}")
