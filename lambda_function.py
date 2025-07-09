@@ -402,33 +402,18 @@ def process_firebot_command(event_data, user_id):
             print(f"Skipping message from bot user {user_id} to prevent duplicate processing")
             return
         
-        # Create a unique lock key for this firebot command
-        command_lock_key = f"firebot-{channel_id}-{hash(text)}"
-        
-        print(f"Attempting to acquire DynamoDB lock for firebot command: {text}")
-        print(f"Lock key: {command_lock_key}")
-        
-        # Check if command is already being processed
-        if check_incident_processing_status(command_lock_key):
-            print(f"Firebot command {text} is already being processed")
-            return
-        
-        # Try to acquire DynamoDB lock for this command
-        if not acquire_incident_lock(command_lock_key, timeout_minutes=1):
-            print(f"Failed to acquire lock for firebot command: {text}")
-            return
-        
-        print(f"Successfully acquired lock for firebot command: {text}")
-        
         # Create a unique cache key for this firebot command to prevent duplicates
         command_cache_key = f"firebot_{channel_id}_{text}"
         if command_cache_key in processed_events:
             print(f"Firebot command already processed: {text}")
-            release_incident_lock(command_lock_key)
             return
         
-        # Mark command as processed
+        # Mark command as processed immediately to prevent duplicates
         processed_events.add(command_cache_key)
+        
+        # Use a simpler approach - just rely on the cache for firebot commands
+        # since they're quick operations and don't need the full DynamoDB coordination
+        print(f"Processing firebot command: {text}")
         
         # Parse the command
         parts = text.split()
@@ -445,18 +430,9 @@ def process_firebot_command(event_data, user_id):
         else:
             print(f"Unknown firebot command: {command}")
             post_firebot_help(channel_id)
-        
-        # Release the DynamoDB lock for this command
-        release_incident_lock(command_lock_key)
-        print(f"Released lock for firebot command: {text}")
             
     except Exception as e:
         print(f"Error processing firebot command: {e}")
-        # Release lock even on error
-        try:
-            release_incident_lock(command_lock_key)
-        except:
-            pass
 
 def handle_firebot_summary(channel_id, user_id):
     """Generate a comprehensive summary of the incident channel"""
