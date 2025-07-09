@@ -831,7 +831,16 @@ def process_fire_ticket(event_data, user_id):
         # Step 4: Invite user to channel
         invite_user_to_channel(user_id, channel_id)
         
-        # Step 5: Post welcome message (only once per incident)
+        # Step 5: Post greeting message to incident channel (only once per incident)
+        greeting_cache_key = f"greeting_{issue_key}"
+        if greeting_cache_key not in processed_events:
+            processed_events.add(greeting_cache_key)
+            post_incident_channel_greeting(channel_id, issue_key)
+            print(f"Posted greeting message for {issue_key}")
+        else:
+            print(f"Greeting message for {issue_key} already posted, skipping")
+        
+        # Step 6: Post welcome message to source channel (only once per incident)
         welcome_cache_key = f"welcome_{issue_key}"
         if welcome_cache_key not in processed_events:
             processed_events.add(welcome_cache_key)
@@ -840,7 +849,7 @@ def process_fire_ticket(event_data, user_id):
         else:
             print(f"Welcome message for {issue_key} already posted, skipping")
         
-        # Step 6: Generate and post summary (only once per incident)
+        # Step 7: Generate and post summary (only once per incident)
         summary_cache_key = f"summary_{issue_key}"
         if summary_cache_key not in processed_events:
             processed_events.add(summary_cache_key)
@@ -851,11 +860,11 @@ def process_fire_ticket(event_data, user_id):
         else:
             print(f"Summary for {issue_key} already posted, skipping")
         
-        # Step 7: Fetch attachments once for both analysis and media processing
+        # Step 8: Fetch attachments once for both analysis and media processing
         print(f"Fetching attachments for analysis and media processing: {issue_key}")
         attachments = fetch_jira_attachments(issue_key)
         
-        # Step 8: Analyze ticket for missing information and reach out to creator (critical step)
+        # Step 9: Analyze ticket for missing information and reach out to creator (critical step)
         analysis_cache_key = f"analysis_{issue_key}"
         if analysis_cache_key not in processed_events:
             print(f"Starting analysis and outreach for {issue_key}")
@@ -868,7 +877,7 @@ def process_fire_ticket(event_data, user_id):
         else:
             print(f"Analysis for {issue_key} already completed, skipping")
         
-        # Step 9: Process media attachments from Jira ticket
+        # Step 10: Process media attachments from Jira ticket
         media_cache_key = f"media_{issue_key}"
         if media_cache_key not in processed_events:
             try:
@@ -2347,26 +2356,33 @@ def is_our_command_response(event_data):
     except Exception as e:
         print(f"Error checking if our command response: {e}")
         return False
-    """Mark an event as processed in DynamoDB for persistent deduplication"""
-    if not DYNAMODB_AVAILABLE or not coordination_table:
-        return
-    
-    try:
-        # Calculate expiration time (24 hours from now)
-        now = datetime.datetime.now()
-        expiration_time = now + datetime.timedelta(hours=24)
-        expiration_timestamp = int(expiration_time.timestamp())
-        
-        coordination_table.put_item(
-            Item={
-                'incident_key': f"event-{event_id}",
-                'processed_at': now.isoformat(),
-                'expiration_time': expiration_timestamp,
-                'lambda_instance': os.environ.get('AWS_LAMBDA_REQUEST_ID', 'unknown'),
-                'status': 'processed'
-            }
-        )
-        print(f"Marked event {event_id} as processed in DynamoDB")
-        
-    except Exception as e:
-        print(f"Error marking event as processed: {e}")
+
+def post_incident_channel_greeting(channel_id, issue_key):
+    """Post a greeting message to the incident channel with AI command information"""
+    greeting_text = f"""🚨 **Welcome to the incident channel for {issue_key}!**
+
+I'm FireBot, your AI-powered incident management assistant. Here's what I can help you with:
+
+🤖 **AI Commands Available:**
+• `firebot summary` - Generate a comprehensive AI summary of the incident
+• `firebot time` - Show how long the incident has been open
+
+💡 **What I've already done:**
+• Analyzed the Jira ticket for missing investigation details
+• Uploaded any screenshots or media from the ticket
+• Reached out to the ticket creator for additional information
+
+Just type one of the commands above to get started! I'm here to help make incident management more efficient. 🐾"""
+
+    response = requests.post(
+        "https://slack.com/api/chat.postMessage",
+        headers=SLACK_HEADERS,
+        json={
+            "channel": channel_id,
+            "text": greeting_text,
+            "unfurl_links": False,
+            "unfurl_media": False
+        }
+    ).json()
+    if not response.get("ok"):
+        print(f"Error posting incident channel greeting: {response.get('error')}")
