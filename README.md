@@ -125,12 +125,13 @@ Add these permissions to your Lambda execution role:
     {
       "Effect": "Allow",
       "Action": [
+        "dynamodb:DescribeTable",
         "dynamodb:GetItem",
         "dynamodb:PutItem",
         "dynamodb:UpdateItem",
         "dynamodb:DeleteItem"
       ],
-      "Resource": "arn:aws:dynamodb:*:*:table/firebot-coordination"
+      "Resource": "arn:aws:dynamodb:us-east-2:493456217622:table/firebot-coordination"
     }
   ]
 }

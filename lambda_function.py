@@ -107,10 +107,12 @@ def acquire_incident_lock(issue_key, timeout_minutes=10):
     
     # Check if table exists
     try:
-        coordination_table.table_status
-        print("DynamoDB table exists and is accessible")
+        print("Attempting to access DynamoDB table...")
+        table_status = coordination_table.table_status
+        print(f"DynamoDB table exists and is accessible. Status: {table_status}")
     except Exception as e:
         print(f"DynamoDB table not accessible: {e}")
+        print("Error type:", type(e).__name__)
         print("Falling back to existing coordination logic")
         return True
     
@@ -120,6 +122,7 @@ def acquire_incident_lock(issue_key, timeout_minutes=10):
         expiration_time = now + datetime.timedelta(minutes=timeout_minutes)
         expiration_timestamp = int(expiration_time.timestamp())
         
+        print("Attempting DynamoDB conditional write for lock acquisition...")
         # Try to acquire lock with conditional write
         response = coordination_table.put_item(
             Item={
@@ -134,6 +137,7 @@ def acquire_incident_lock(issue_key, timeout_minutes=10):
                 ':current_time': int(now.timestamp())
             }
         )
+        print("DynamoDB put_item successful")
         
         print(f"Successfully acquired DynamoDB lock for {issue_key}")
         return True
