@@ -158,6 +158,63 @@ def acquire_incident_lock(issue_key, timeout_minutes=10):
         print(f"Error acquiring DynamoDB lock: {e}")
         return True  # Proceed if lock acquisition fails
 
+def check_event_processed(event_id):
+    """Check if an event has been processed using DynamoDB for persistent deduplication"""
+    if not DYNAMODB_AVAILABLE or not coordination_table:
+        return False
+    
+    try:
+        response = coordination_table.get_item(
+            Key={
+                'incident_key': f"event-{event_id}"
+            }
+        )
+        
+        if 'Item' in response:
+            item = response['Item']
+            expiration_time = item.get('expiration_time', 0)
+            current_time = int(datetime.datetime.now().timestamp())
+            
+            # Check if event processing record is still valid (24 hours)
+            if expiration_time > current_time:
+                print(f"Event {event_id} already processed (expires at {expiration_time})")
+                return True
+            else:
+                print(f"Event {event_id} processing record expired, can reprocess")
+                return False
+        else:
+            print(f"Event {event_id} not found in DynamoDB, can process")
+            return False
+            
+    except Exception as e:
+        print(f"Error checking event processing status: {e}")
+        return False
+
+def mark_event_processed(event_id):
+    """Mark an event as processed in DynamoDB for persistent deduplication"""
+    if not DYNAMODB_AVAILABLE or not coordination_table:
+        return
+    
+    try:
+        # Calculate expiration time (24 hours from now)
+        now = datetime.datetime.now()
+        expiration_time = now + datetime.timedelta(hours=24)
+        expiration_timestamp = int(expiration_time.timestamp())
+        
+        coordination_table.put_item(
+            Item={
+                'incident_key': f"event-{event_id}",
+                'processed_at': now.isoformat(),
+                'expiration_time': expiration_timestamp,
+                'lambda_instance': os.environ.get('AWS_LAMBDA_REQUEST_ID', 'unknown'),
+                'status': 'processed'
+            }
+        )
+        print(f"Marked event {event_id} as processed in DynamoDB")
+        
+    except Exception as e:
+        print(f"Error marking event as processed: {e}")
+
 def release_incident_lock(issue_key):
     """Release the distributed lock for incident processing"""
     if not DYNAMODB_AVAILABLE or not coordination_table:
@@ -271,11 +328,22 @@ def lambda_handler(event, context=None):
                 print(f"Current cache contents: {list(processed_events)}")
                 print(f"Checking if event {event_id} is already processed...")
                 
+                # First check in-memory cache (fast)
                 if event_id in processed_events:
-                    print(f"❌ Duplicate event detected, skipping: {event_id}")
+                    print(f"❌ Duplicate event detected in cache, skipping: {event_id}")
                     return {"statusCode": 200, "body": "Duplicate event skipped"}
                 
-                # Mark event as processed
+                # Then check DynamoDB for persistent deduplication
+                if check_event_processed(event_id):
+                    print(f"❌ Duplicate event detected in DynamoDB, skipping: {event_id}")
+                    # Add to cache to prevent future checks
+                    add_to_cache(event_id)
+                    return {"statusCode": 200, "body": "Duplicate event skipped"}
+                
+                # Mark event as processed in DynamoDB immediately
+                mark_event_processed(event_id)
+                
+                # Mark event as processed in memory cache
                 print(f"✅ New event detected: {event_id}")
                 add_to_cache(event_id)
                 
@@ -283,6 +351,11 @@ def lambda_handler(event, context=None):
                 
                 # Quick response to Slack to prevent webhook timeout/retry
                 try:
+                    # Check if this is our bot's response message
+                    if is_our_command_response(event_data):
+                        print("Skipping our bot's response message to prevent duplicate processing")
+                        return {"statusCode": 200, "body": "Bot response skipped"}
+                    
                     # Check if this is a firebot command in an incident channel
                     if is_firebot_command(event_data):
                         process_firebot_command(event_data, user_id)
@@ -390,6 +463,8 @@ def process_firebot_command(event_data, user_id):
     try:
         text = event_data.get("text", "").strip().lower()
         channel_id = event_data.get("channel", "")
+        event_ts = event_data.get("ts", "")
+        slack_event_id = event_data.get("event_id", "")
         
         # Skip messages from bots to prevent processing our own messages
         if event_data.get("bot_id") or event_data.get("app_id"):
@@ -402,25 +477,28 @@ def process_firebot_command(event_data, user_id):
             print(f"Skipping message from bot user {user_id} to prevent duplicate processing")
             return
         
-        # Create a unique lock key for this firebot command
-        command_lock_key = f"firebot-{channel_id}-{hash(text)}"
+        # Create a more specific lock key that includes user, timestamp, and event ID
+        command_hash = hashlib.md5(text.encode()).hexdigest()[:8]
+        lock_key = f"firebot-cmd-{channel_id}-{user_id}-{command_hash}-{event_ts}"
+        if slack_event_id:
+            lock_key += f"-{slack_event_id[:8]}"
         
         print(f"Attempting to acquire DynamoDB lock for firebot command: {text}")
-        print(f"Lock key: {command_lock_key}")
+        print(f"Lock key: {lock_key}")
         print(f"Current cache contents: {list(processed_events)}")
         
-        # Try to acquire DynamoDB lock for this command
-        if not acquire_incident_lock(command_lock_key, timeout_minutes=2):
+        # Try to acquire DynamoDB lock for this command with shorter timeout
+        if not acquire_incident_lock(lock_key, timeout_minutes=1):
             print(f"Failed to acquire lock for firebot command: {text}")
             return
         
         print(f"Successfully acquired lock for firebot command: {text}")
         
         # Create a unique cache key for this firebot command to prevent duplicates
-        command_cache_key = f"firebot_{channel_id}_{text}"
+        command_cache_key = f"firebot_{channel_id}_{text}_{user_id}_{event_ts}"
         if command_cache_key in processed_events:
             print(f"Firebot command already processed: {text}")
-            release_incident_lock(command_lock_key)
+            release_incident_lock(lock_key)
             return
         
         # Mark command as processed
@@ -430,27 +508,34 @@ def process_firebot_command(event_data, user_id):
         parts = text.split()
         if len(parts) < 2:
             print("Invalid firebot command - missing subcommand")
+            release_incident_lock(lock_key)
             return
         
         command = parts[1]
         
         if command == "summary":
-            handle_firebot_summary(channel_id, user_id)
+            response = handle_firebot_summary(channel_id, user_id)
+            if response:
+                track_command_response(channel_id, user_id, text, response)
         elif command == "time":
-            handle_firebot_time(channel_id, user_id)
+            response = handle_firebot_time(channel_id, user_id)
+            if response:
+                track_command_response(channel_id, user_id, text, response)
         else:
             print(f"Unknown firebot command: {command}")
-            post_firebot_help(channel_id)
+            response = post_firebot_help(channel_id)
+            if response:
+                track_command_response(channel_id, user_id, text, response)
         
         # Release the DynamoDB lock for this command
-        release_incident_lock(command_lock_key)
+        release_incident_lock(lock_key)
         print(f"Released lock for firebot command: {text}")
             
     except Exception as e:
         print(f"Error processing firebot command: {e}")
         # Release lock even on error
         try:
-            release_incident_lock(command_lock_key)
+            release_incident_lock(lock_key)
         except:
             pass
 
@@ -462,18 +547,20 @@ def handle_firebot_summary(channel_id, user_id):
         # Get channel history
         messages = get_channel_history(channel_id)
         if not messages:
-            post_message(channel_id, "Could not retrieve channel history for summary.")
-            return
+            response_ts = post_message(channel_id, "Could not retrieve channel history for summary.")
+            return response_ts
         
         # Generate summary using AI
         summary = generate_incident_summary(messages, channel_id)
         
         # Post the summary
-        post_message(channel_id, f"📋 **Incident Summary**\n\n{summary}")
+        response_ts = post_message(channel_id, f"📋 **Incident Summary**\n\n{summary}")
+        return response_ts
         
     except Exception as e:
         print(f"Error generating incident summary: {e}")
-        post_message(channel_id, "Sorry, I encountered an error while generating the summary.")
+        response_ts = post_message(channel_id, "Sorry, I encountered an error while generating the summary.")
+        return response_ts
 
 def handle_firebot_time(channel_id, user_id):
     """Calculate and display how long the incident has been open"""
@@ -483,13 +570,13 @@ def handle_firebot_time(channel_id, user_id):
         # Get channel creation time
         channel_info = get_channel_info(channel_id)
         if not channel_info:
-            post_message(channel_id, "Could not retrieve channel information.")
-            return
+            response_ts = post_message(channel_id, "Could not retrieve channel information.")
+            return response_ts
         
         created_timestamp = channel_info.get("created", 0)
         if not created_timestamp:
-            post_message(channel_id, "Could not determine when this incident started.")
-            return
+            response_ts = post_message(channel_id, "Could not determine when this incident started.")
+            return response_ts
         
         # Calculate duration
         now = datetime.datetime.now()
@@ -500,11 +587,13 @@ def handle_firebot_time(channel_id, user_id):
         duration_text = format_duration(duration)
         
         # Post the time information
-        post_message(channel_id, f"⏰ **Incident Duration**\n\nThis incident has been open for: **{duration_text}**\nStarted: {created_time.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+        response_ts = post_message(channel_id, f"⏰ **Incident Duration**\n\nThis incident has been open for: **{duration_text}**\nStarted: {created_time.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+        return response_ts
         
     except Exception as e:
         print(f"Error calculating incident time: {e}")
-        post_message(channel_id, "Sorry, I encountered an error while calculating the incident duration.")
+        response_ts = post_message(channel_id, "Sorry, I encountered an error while calculating the incident duration.")
+        return response_ts
 
 def get_channel_history(channel_id, limit=100):
     """Get recent channel history"""
@@ -639,7 +728,8 @@ Available commands:
 
 Just type one of these commands in the channel!"""
     
-    post_message(channel_id, help_text)
+    response_ts = post_message(channel_id, help_text)
+    return response_ts
 
 def post_message(channel_id, text):
     """Post a message to a Slack channel"""
@@ -657,9 +747,14 @@ def post_message(channel_id, text):
         
         if not response.get("ok"):
             print(f"Error posting message: {response.get('error')}")
+            return None
+        
+        # Return the timestamp of the posted message
+        return response.get("ts")
             
     except Exception as e:
         print(f"Error posting message: {e}")
+        return None
 
 # --- CORE LOGIC ---
 def process_fire_ticket(event_data, user_id):
@@ -2194,3 +2289,84 @@ def cleanup_temp_lock_channel(channel_name):
         print(f"This is normal - the lock channel will remain but won't interfere with future operations")
     except Exception as e:
         print(f"Error in cleanup (expected): {e}")
+
+def track_command_response(channel_id, user_id, command_text, response_ts):
+    """Track a command response to prevent processing bot messages that are our responses"""
+    if not DYNAMODB_AVAILABLE or not coordination_table:
+        return
+    
+    try:
+        # Calculate expiration time (1 hour from now)
+        now = datetime.datetime.now()
+        expiration_time = now + datetime.timedelta(hours=1)
+        expiration_timestamp = int(expiration_time.timestamp())
+        
+        # Create a tracking key for this command response
+        command_hash = hashlib.md5(command_text.encode()).hexdigest()[:8]
+        tracking_key = f"cmd-response-{channel_id}-{user_id}-{command_hash}"
+        
+        coordination_table.put_item(
+            Item={
+                'incident_key': tracking_key,
+                'command_text': command_text,
+                'response_ts': response_ts,
+                'tracked_at': now.isoformat(),
+                'expiration_time': expiration_timestamp,
+                'status': 'tracking'
+            }
+        )
+        print(f"Tracked command response: {tracking_key}")
+        
+    except Exception as e:
+        print(f"Error tracking command response: {e}")
+
+def is_our_command_response(event_data):
+    """Check if this bot message is a response to our command"""
+    if not DYNAMODB_AVAILABLE or not coordination_table:
+        return False
+    
+    try:
+        channel_id = event_data.get("channel", "")
+        user_id = event_data.get("user", "")
+        text = event_data.get("text", "")
+        event_ts = event_data.get("ts", "")
+        
+        # Check if this is a bot message
+        if not (event_data.get("bot_id") or event_data.get("app_id")):
+            return False
+        
+        # For now, use a simpler approach - check if this is our bot's response
+        # We can enhance this later with more sophisticated tracking
+        bot_user_ids = [os.environ.get("SLACK_BOT_USER_ID"), "U09584DT15X"]
+        if user_id in [uid for uid in bot_user_ids if uid]:
+            print(f"Detected our bot's response message: {text[:50]}...")
+            return True
+        
+        return False
+        
+    except Exception as e:
+        print(f"Error checking if our command response: {e}")
+        return False
+    """Mark an event as processed in DynamoDB for persistent deduplication"""
+    if not DYNAMODB_AVAILABLE or not coordination_table:
+        return
+    
+    try:
+        # Calculate expiration time (24 hours from now)
+        now = datetime.datetime.now()
+        expiration_time = now + datetime.timedelta(hours=24)
+        expiration_timestamp = int(expiration_time.timestamp())
+        
+        coordination_table.put_item(
+            Item={
+                'incident_key': f"event-{event_id}",
+                'processed_at': now.isoformat(),
+                'expiration_time': expiration_timestamp,
+                'lambda_instance': os.environ.get('AWS_LAMBDA_REQUEST_ID', 'unknown'),
+                'status': 'processed'
+            }
+        )
+        print(f"Marked event {event_id} as processed in DynamoDB")
+        
+    except Exception as e:
+        print(f"Error marking event as processed: {e}")

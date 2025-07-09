@@ -10,9 +10,32 @@ Resources:
       AttributeDefinitions:
         - AttributeName: incident_key
           AttributeType: S
+        - AttributeName: channel_id
+          AttributeType: S
+        - AttributeName: user_id
+          AttributeType: S
+        - AttributeName: event_type
+          AttributeType: S
       KeySchema:
         - AttributeName: incident_key
           KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: channel_user_index
+          KeySchema:
+            - AttributeName: channel_id
+              KeyType: HASH
+            - AttributeName: user_id
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: event_type_index
+          KeySchema:
+            - AttributeName: event_type
+              KeyType: HASH
+            - AttributeName: incident_key
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
       TimeToLiveSpecification:
         AttributeName: expiration_time
         Enabled: true
