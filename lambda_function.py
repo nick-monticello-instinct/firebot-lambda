@@ -99,6 +99,8 @@ def add_to_cache(event_id):
 # --- DYNAMODB COORDINATION FUNCTIONS ---
 def acquire_incident_lock(issue_key, timeout_minutes=10):
     """Acquire a distributed lock for incident processing using DynamoDB"""
+    print(f"DEBUG: DYNAMODB_AVAILABLE = {DYNAMODB_AVAILABLE}")
+    print(f"DEBUG: coordination_table = {coordination_table}")
     if not DYNAMODB_AVAILABLE or not coordination_table:
         print("DynamoDB not available, using fallback coordination")
         return True
@@ -644,6 +646,7 @@ def process_fire_ticket(event_data, user_id):
     print(f"Found Jira issue: {issue_key}")
     
     try:
+        print(f"DEBUG: Starting DynamoDB coordination for {issue_key}")
         # Step 0: Acquire distributed lock using DynamoDB
         if not acquire_incident_lock(issue_key):
             print(f"Failed to acquire lock for {issue_key}, another instance is processing")
