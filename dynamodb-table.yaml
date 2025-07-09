@@ -1,0 +1,35 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'DynamoDB table for FireBot incident coordination'
+
+Resources:
+  FireBotCoordinationTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: firebot-coordination
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: incident_key
+          AttributeType: S
+      KeySchema:
+        - AttributeName: incident_key
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expiration_time
+        Enabled: true
+      Tags:
+        - Key: Name
+          Value: FireBot-Coordination
+        - Key: Purpose
+          Value: Incident processing coordination
+
+Outputs:
+  TableName:
+    Description: Name of the DynamoDB table
+    Value: !Ref FireBotCoordinationTable
+    Export:
+      Name: FireBotCoordinationTableName
+  TableArn:
+    Description: ARN of the DynamoDB table
+    Value: !GetAtt FireBotCoordinationTable.Arn
+    Export:
+      Name: FireBotCoordinationTableArn 

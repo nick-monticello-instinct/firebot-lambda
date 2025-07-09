@@ -92,6 +92,50 @@ groups:history        # Read channel history for firebot commands
 channels:history      # Read channel history for firebot commands
 ```
 
+### Required AWS Resources
+
+#### DynamoDB Table
+
+Create a DynamoDB table for distributed coordination:
+
+```bash
+# Deploy the CloudFormation template
+aws cloudformation deploy \
+  --template-file dynamodb-table.yaml \
+  --stack-name firebot-coordination \
+  --capabilities CAPABILITY_IAM
+
+# Or create manually:
+aws dynamodb create-table \
+  --table-name firebot-coordination \
+  --attribute-definitions AttributeName=incident_key,AttributeType=S \
+  --key-schema AttributeName=incident_key,KeyType=HASH \
+  --billing-mode PAY_PER_REQUEST \
+  --time-to-live-specification AttributeName=expiration_time,Enabled=true
+```
+
+#### Lambda IAM Permissions
+
+Add these permissions to your Lambda execution role:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem"
+      ],
+      "Resource": "arn:aws:dynamodb:*:*:table/firebot-coordination"
+    }
+  ]
+}
+```
+
 ### Dependencies
 
 Install the required Python packages:

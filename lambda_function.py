@@ -13,6 +13,15 @@ except ImportError:
     print("Warning: Pillow not available, image validation will be limited")
     Image = None
 
+# DynamoDB imports for distributed locking
+try:
+    import boto3
+    from botocore.exceptions import ClientError
+    DYNAMODB_AVAILABLE = True
+except ImportError:
+    print("Warning: boto3 not available, will use fallback coordination")
+    DYNAMODB_AVAILABLE = False
+
 # --- ENVIRONMENT VARIABLES ---
 SLACK_BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
 JIRA_USERNAME = os.environ["JIRA_USERNAME"]
@@ -33,6 +42,17 @@ if GEMINI_MODEL in MODEL_MAPPING:
 
 JIRA_HOSPITAL_FIELD = os.environ.get("JIRA_HOSPITAL_FIELD", "customfield_10297")
 JIRA_SUMMARY_FIELD = "customfield_10250"
+
+# DynamoDB configuration
+DYNAMODB_TABLE_NAME = os.environ.get("DYNAMODB_TABLE_NAME", "firebot-coordination")
+DYNAMODB_REGION = os.environ.get("AWS_REGION", "us-east-1")
+
+# Initialize DynamoDB client
+if DYNAMODB_AVAILABLE:
+    dynamodb = boto3.resource('dynamodb', region_name=DYNAMODB_REGION)
+    coordination_table = dynamodb.Table(DYNAMODB_TABLE_NAME)
+else:
+    coordination_table = None
 
 # --- SLACK PERMISSIONS REQUIRED ---
 # The following Slack OAuth scopes are required for full functionality:
@@ -75,6 +95,123 @@ def add_to_cache(event_id):
     
     processed_events.add(event_id)
     print(f"Added to cache: {event_id} (cache size: {len(processed_events)})")
+
+# --- DYNAMODB COORDINATION FUNCTIONS ---
+def acquire_incident_lock(issue_key, timeout_minutes=10):
+    """Acquire a distributed lock for incident processing using DynamoDB"""
+    if not DYNAMODB_AVAILABLE or not coordination_table:
+        print("DynamoDB not available, using fallback coordination")
+        return True
+    
+    try:
+        # Calculate expiration time
+        now = datetime.datetime.now()
+        expiration_time = now + datetime.timedelta(minutes=timeout_minutes)
+        expiration_timestamp = int(expiration_time.timestamp())
+        
+        # Try to acquire lock with conditional write
+        response = coordination_table.put_item(
+            Item={
+                'incident_key': issue_key,
+                'lock_acquired_at': now.isoformat(),
+                'expiration_time': expiration_timestamp,
+                'lambda_instance': os.environ.get('AWS_LAMBDA_REQUEST_ID', 'unknown'),
+                'status': 'processing'
+            },
+            ConditionExpression='attribute_not_exists(incident_key) OR expiration_time < :current_time',
+            ExpressionAttributeValues={
+                ':current_time': int(now.timestamp())
+            }
+        )
+        
+        print(f"Successfully acquired DynamoDB lock for {issue_key}")
+        return True
+        
+    except ClientError as e:
+        if e.response['Error']['Code'] == 'ConditionalCheckFailedException':
+            print(f"Failed to acquire DynamoDB lock for {issue_key} - another instance is processing")
+            return False
+        else:
+            print(f"DynamoDB error: {e}")
+            return True  # Proceed if DynamoDB fails
+    
+    except Exception as e:
+        print(f"Error acquiring DynamoDB lock: {e}")
+        return True  # Proceed if lock acquisition fails
+
+def release_incident_lock(issue_key):
+    """Release the distributed lock for incident processing"""
+    if not DYNAMODB_AVAILABLE or not coordination_table:
+        return
+    
+    try:
+        # Delete the lock item
+        coordination_table.delete_item(
+            Key={
+                'incident_key': issue_key
+            }
+        )
+        print(f"Released DynamoDB lock for {issue_key}")
+        
+    except Exception as e:
+        print(f"Error releasing DynamoDB lock: {e}")
+
+def check_incident_processing_status(issue_key):
+    """Check if an incident is currently being processed"""
+    if not DYNAMODB_AVAILABLE or not coordination_table:
+        return False
+    
+    try:
+        response = coordination_table.get_item(
+            Key={
+                'incident_key': issue_key
+            }
+        )
+        
+        if 'Item' in response:
+            item = response['Item']
+            expiration_time = item.get('expiration_time', 0)
+            current_time = int(datetime.datetime.now().timestamp())
+            
+            # Check if lock is still valid
+            if expiration_time > current_time:
+                print(f"Incident {issue_key} is currently being processed (expires at {expiration_time})")
+                return True
+            else:
+                print(f"Incident {issue_key} lock has expired, can proceed")
+                return False
+        else:
+            print(f"No lock found for incident {issue_key}")
+            return False
+            
+    except Exception as e:
+        print(f"Error checking incident status: {e}")
+        return False
+
+def mark_incident_completed(issue_key):
+    """Mark an incident as completed in DynamoDB"""
+    if not DYNAMODB_AVAILABLE or not coordination_table:
+        return
+    
+    try:
+        # Update the status to completed
+        response = coordination_table.update_item(
+            Key={
+                'incident_key': issue_key
+            },
+            UpdateExpression='SET #status = :status, completed_at = :completed_at',
+            ExpressionAttributeNames={
+                '#status': 'status'
+            },
+            ExpressionAttributeValues={
+                ':status': 'completed',
+                ':completed_at': datetime.datetime.now().isoformat()
+            }
+        )
+        print(f"Marked incident {issue_key} as completed in DynamoDB")
+        
+    except Exception as e:
+        print(f"Error marking incident as completed: {e}")
 
 # --- CLIENTS AND HEADERS ---
 # Configure Gemini client globally
@@ -507,14 +644,23 @@ def process_fire_ticket(event_data, user_id):
     print(f"Found Jira issue: {issue_key}")
     
     try:
-        # Step 0: Check if incident already processed by looking for existing channels
-        if check_incident_already_processed(issue_key):
-            print(f"Incident {issue_key} already processed, skipping")
+        # Step 0: Acquire distributed lock using DynamoDB
+        if not acquire_incident_lock(issue_key):
+            print(f"Failed to acquire lock for {issue_key}, another instance is processing")
             return
         
-        # Step 1: Fetch Jira data to get hospital name
+        print(f"Successfully acquired lock for {issue_key}")
+        
+        # Step 1: Check if incident already processed by looking for existing channels
+        if check_incident_already_processed(issue_key):
+            print(f"Incident {issue_key} already processed, skipping")
+            release_incident_lock(issue_key)
+            return
+        
+        # Step 2: Fetch Jira data to get hospital name
         jira_data = fetch_jira_data(issue_key)
         if jira_data.status_code != 200:
+            release_incident_lock(issue_key)
             raise Exception(f"Failed to fetch Jira ticket data: {jira_data.text}")
 
         ticket = jira_data.json()
@@ -531,15 +677,16 @@ def process_fire_ticket(event_data, user_id):
         channel_slug = issue_key.lower()
         base_channel_name = f"incident-{channel_slug}-{date_str}-{hospital_slug}"
         
-        # Step 2: Create the incident channel with better coordination
+        # Step 3: Create the incident channel
         channel_id, channel_name = create_incident_channel_with_coordination(base_channel_name, issue_key)
         if not channel_id:
-            print(f"Failed to coordinate channel creation for {issue_key}, another instance may be processing")
+            print(f"Failed to create channel for {issue_key}")
+            release_incident_lock(issue_key)
             return
             
-        print(f"Successfully coordinated channel: {channel_name} ({channel_id})")
+        print(f"Successfully created channel: {channel_name} ({channel_id})")
         
-        # Step 3: Post coordination message to claim ownership
+        # Step 4: Post coordination message to claim ownership
         post_coordination_message(channel_id, issue_key)
         
         # Step 4: Invite user to channel
@@ -609,8 +756,14 @@ def process_fire_ticket(event_data, user_id):
         
         print(f"Successfully processed fire ticket for {issue_key}")
         
+        # Mark incident as completed and release lock
+        mark_incident_completed(issue_key)
+        release_incident_lock(issue_key)
+        
     except Exception as e:
         print(f"Error processing fire ticket {issue_key}: {e}")
+        # Release lock even on error
+        release_incident_lock(issue_key)
         raise
 
 def attempt_immediate_coordination(issue_key):
