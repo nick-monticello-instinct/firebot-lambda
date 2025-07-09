@@ -45,6 +45,16 @@ JIRA_SUMMARY_FIELD = "customfield_10250"
 # - files:write           (upload media files from Jira attachments)
 # - files:read            (read file information for error handling)
 
+# --- INVESTIGATION CHECKLIST ---
+# The bot analyzes each ticket against these 7 critical investigation items:
+# 1. Issue replication in customer's application
+# 2. Issue replication on Demo instance  
+# 3. Steps to reproduce
+# 4. Screenshots provided
+# 5. Problem start time
+# 6. Practice-wide impact
+# 7. Multi-practice impact
+
 # --- DEDUPLICATION CACHE ---
 # Simple in-memory cache for deduplication (resets on each Lambda cold start)
 processed_events = set()
@@ -209,9 +219,13 @@ def process_fire_ticket(event_data, user_id):
         else:
             print(f"Summary for {issue_key} already posted, skipping")
         
+        # NEW: Fetch attachments once for both analysis and media processing
+        print(f"Fetching attachments for analysis and media processing: {issue_key}")
+        attachments = fetch_jira_attachments(issue_key)
+        
         # NEW: Analyze ticket for missing information and reach out to creator
         try:
-            analyze_and_reach_out_to_creator(ticket, channel_id, issue_key)
+            analyze_and_reach_out_to_creator(ticket, channel_id, issue_key, attachments)
         except Exception as e:
             print(f"Error in ticket analysis and outreach: {e}")
             # Don't fail the entire process if this step fails
@@ -221,9 +235,6 @@ def process_fire_ticket(event_data, user_id):
             media_cache_key = f"media_{issue_key}"
             if media_cache_key not in processed_events:
                 processed_events.add(media_cache_key)
-                
-                print(f"Processing media attachments for {issue_key}")
-                attachments = fetch_jira_attachments(issue_key)
                 
                 if attachments:
                     print(f"Found {len(attachments)} media attachments, processing...")
@@ -251,7 +262,7 @@ def process_fire_ticket(event_data, user_id):
         print(f"Error processing fire ticket {issue_key}: {e}")
         raise
 
-def analyze_and_reach_out_to_creator(ticket, channel_id, issue_key):
+def analyze_and_reach_out_to_creator(ticket, channel_id, issue_key, attachments):
     """Analyze ticket for missing info and reach out to creator"""
     print(f"Analyzing ticket {issue_key} for missing information...")
     
@@ -271,9 +282,11 @@ def analyze_and_reach_out_to_creator(ticket, channel_id, issue_key):
             print("Could not extract creator information from ticket")
             return
         
-        # Analyze ticket for missing information
+        # Analyze ticket for missing information using structured checklist
         parsed_data = parse_jira_ticket(ticket)
-        missing_info_analysis = analyze_missing_information(parsed_data, ticket)
+        
+        # Run the structured checklist analysis (attachments already fetched)
+        checklist_results = analyze_incident_checklist(parsed_data, ticket, attachments)
         
         # Find creator in Slack
         slack_user_id = find_slack_user_by_email(creator_info.get('email'))
@@ -286,7 +299,7 @@ def analyze_and_reach_out_to_creator(ticket, channel_id, issue_key):
         # Generate and send combined analysis + outreach message
         combined_message = generate_combined_incident_message(
             creator_info, 
-            missing_info_analysis, 
+            checklist_results, 
             issue_key,
             slack_user_id,
             parsed_data
@@ -411,8 +424,8 @@ def format_hospital_for_channel(hospital_name):
     print(f"Formatted hospital name '{hospital_name}' to '{formatted}'")
     return formatted
 
-def analyze_missing_information(parsed_data, full_ticket):
-    """Use Gemini to analyze what information might be missing from the incident"""
+def analyze_incident_checklist(parsed_data, full_ticket, attachments):
+    """Analyze ticket against specific investigation checklist items"""
     try:
         # Get additional fields that might be relevant
         fields = full_ticket.get("fields", {})
@@ -420,61 +433,178 @@ def analyze_missing_information(parsed_data, full_ticket):
         status = fields.get("status", {}).get("name", "Unknown")
         created = fields.get("created", "Unknown")
         
-        # Create a comprehensive analysis prompt
-        prompt = f"""You are a supportive incident response assistant working with a fun veterinary software company. Analyze this Jira incident ticket to help identify what additional information might be helpful for faster resolution.
+        # Create a structured analysis prompt for the 7 specific items
+        prompt = f"""You are an incident response assistant for a veterinary software company. Analyze this Jira ticket against our investigation checklist.
 
 TICKET DETAILS:
 Priority: {priority}
 Status: {status}
 Created: {created}
+Attachments: {len(attachments)} media files found
 
 Summary: {parsed_data['summary']}
 
 Description: {parsed_data['description']}
 
-Please provide a supportive analysis that identifies:
-1. What additional information might help our development team resolve this more efficiently?
-2. What context could be valuable to have on hand?
-3. Are there any helpful details that could speed up the resolution process?
+Please analyze this ticket and determine if it contains information about each of these 7 critical investigation items. For each item, respond with either "FOUND" or "MISSING" followed by a brief explanation.
 
-Focus on practical information that would be great to have, such as:
-- Steps to reproduce the issue
-- Any error messages or logs
-- Environment context (production/staging/development)
-- Impact scope (how many users or clinics affected)
-- Recent changes or deployments that might be related
-- Screenshots or examples if available
-- Any urgency context
+INVESTIGATION CHECKLIST:
+1. Issue replication in customer's application - Has the reporter confirmed they can reproduce this issue in their own application?
+2. Issue replication on Demo instance - Has anyone tested this on our Demo/staging environment?
+3. Steps to reproduce - Are clear, step-by-step reproduction instructions provided?
+4. Screenshots provided - Are screenshots or visual evidence included? (We found {len(attachments)} media files)
+5. Problem start time - When did this issue first start occurring for the customer?
+6. Practice-wide impact - Is this affecting the entire practice/all users, or just specific users?
+7. Multi-practice impact - Are other veterinary practices experiencing this same issue?
 
-Write this in a collaborative, supportive tone that recognizes the reporter did great work filing the ticket and we're just looking to gather additional context that might help. Keep it friendly and professional - we're all on the same team working to help veterinary practices!"""
+For each item, respond in this exact format:
+1. [FOUND/MISSING]: Brief explanation
+2. [FOUND/MISSING]: Brief explanation
+3. [FOUND/MISSING]: Brief explanation
+4. [FOUND/MISSING]: Brief explanation
+5. [FOUND/MISSING]: Brief explanation
+6. [FOUND/MISSING]: Brief explanation
+7. [FOUND/MISSING]: Brief explanation
+
+Be thorough but concise in your analysis."""
 
         fallback_models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
         models_to_try = [GEMINI_MODEL] + [m for m in fallback_models if m != GEMINI_MODEL]
         
         for model_name in models_to_try:
             try:
-                print(f"Analyzing missing information with model: {model_name}")
+                print(f"Analyzing incident checklist with model: {model_name}")
                 model = genai.GenerativeModel(model_name)
                 response = model.generate_content(prompt)
                 
                 if hasattr(response, 'text') and response.text:
-                    print(f"Successfully analyzed missing information with model: {model_name}")
-                    return response.text.strip()
+                    analysis = response.text.strip()
+                    print(f"Successfully analyzed incident checklist with model: {model_name}")
+                    return parse_checklist_analysis(analysis)
                 elif response.parts:
                     analysis_text = ''.join(part.text for part in response.parts if hasattr(part, 'text'))
                     if analysis_text:
-                        print(f"Successfully analyzed missing information with model: {model_name}")
-                        return analysis_text.strip()
+                        print(f"Successfully analyzed incident checklist with model: {model_name}")
+                        return parse_checklist_analysis(analysis_text.strip())
                 
             except Exception as e:
                 print(f"Error with model {model_name}: {e}")
                 continue
         
-        return "Could not analyze missing information due to AI service issues."
+        return create_default_checklist_result()
         
     except Exception as e:
-        print(f"Error analyzing missing information: {e}")
-        return "Could not analyze missing information due to an error."
+        print(f"Error analyzing incident checklist: {e}")
+        return create_default_checklist_result()
+
+def parse_checklist_analysis(analysis_text):
+    """Parse the AI analysis into structured checklist results"""
+    checklist_items = [
+        "Issue replication in customer's application",
+        "Issue replication on Demo instance", 
+        "Steps to reproduce",
+        "Screenshots provided",
+        "Problem start time",
+        "Practice-wide impact",
+        "Multi-practice impact"
+    ]
+    
+    results = {
+        "missing_items": [],
+        "found_items": [],
+        "analysis_text": analysis_text
+    }
+    
+    lines = analysis_text.split('\n')
+    for i, line in enumerate(lines):
+        if line.strip() and any(str(j+1) + '.' in line for j in range(7)):
+            if 'MISSING' in line.upper():
+                if i < len(checklist_items):
+                    results["missing_items"].append({
+                        "item": checklist_items[i] if i < len(checklist_items) else f"Item {i+1}",
+                        "explanation": line.split(':', 1)[1].strip() if ':' in line else line
+                    })
+            elif 'FOUND' in line.upper():
+                if i < len(checklist_items):
+                    results["found_items"].append({
+                        "item": checklist_items[i] if i < len(checklist_items) else f"Item {i+1}",
+                        "explanation": line.split(':', 1)[1].strip() if ':' in line else line
+                    })
+    
+    print(f"Parsed checklist: {len(results['missing_items'])} missing, {len(results['found_items'])} found")
+    return results
+
+def create_default_checklist_result():
+    """Create a default checklist result when AI analysis fails"""
+    return {
+        "missing_items": [],
+        "found_items": [],
+        "analysis_text": "Could not complete checklist analysis due to technical issues."
+    }
+
+def generate_missing_items_requests(missing_items, issue_key, parsed_data):
+    """Generate specific requests for missing investigation items"""
+    if not missing_items:
+        return "Great news! This ticket appears to have all the key investigation details we need. 🎉"
+    
+    try:
+        missing_items_text = "\n".join([f"• {item['item']}: {item['explanation']}" for item in missing_items])
+        
+        prompt = f"""You are a helpful incident response assistant for a veterinary software company. Generate a friendly, specific request for missing investigation details.
+
+INCIDENT: {issue_key}
+SUMMARY: {parsed_data.get('summary', '')[:200]}
+
+MISSING ITEMS:
+{missing_items_text}
+
+Create a supportive message that:
+1. Thanks the reporter for the detailed ticket
+2. Explains we need a few more details to investigate efficiently  
+3. Lists the specific missing items as actionable requests
+4. Uses a collaborative, helpful tone
+5. Emphasizes we're working together to help veterinary practices
+
+Use bullet points for the requests and keep the tone encouraging. Make each request specific and actionable. Don't use the reporter's name since we'll mention them separately."""
+
+        fallback_models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
+        models_to_try = [GEMINI_MODEL] + [m for m in fallback_models if m != GEMINI_MODEL]
+        
+        for model_name in models_to_try:
+            try:
+                print(f"Generating missing items requests with model: {model_name}")
+                model = genai.GenerativeModel(model_name)
+                response = model.generate_content(prompt)
+                
+                if hasattr(response, 'text') and response.text:
+                    print(f"Successfully generated missing items requests with model: {model_name}")
+                    return response.text.strip()
+                elif response.parts:
+                    request_text = ''.join(part.text for part in response.parts if hasattr(part, 'text'))
+                    if request_text:
+                        print(f"Successfully generated missing items requests with model: {model_name}")
+                        return request_text.strip()
+                
+            except Exception as e:
+                print(f"Error with model {model_name}: {e}")
+                continue
+        
+        # Fallback if AI fails
+        return generate_fallback_missing_items_message(missing_items)
+        
+    except Exception as e:
+        print(f"Error generating missing items requests: {e}")
+        return generate_fallback_missing_items_message(missing_items)
+
+def generate_fallback_missing_items_message(missing_items):
+    """Generate a simple fallback message for missing items"""
+    items_list = "\n".join([f"• {item['item']}" for item in missing_items])
+    
+    return f"""Thanks for reporting this issue! To help our development team investigate more efficiently, could you please provide some additional details:
+
+{items_list}
+
+This information will help us resolve the issue faster. Thanks for your collaboration! 🐾"""
 
 def find_slack_user_by_email(email):
     """Find Slack user ID by email address"""
@@ -500,8 +630,8 @@ def find_slack_user_by_email(email):
         print(f"Error finding Slack user by email: {e}")
         return None
 
-def generate_combined_incident_message(creator_info, missing_info_analysis, issue_key, slack_user_id, parsed_data):
-    """Generate a combined incident analysis and creator outreach message"""
+def generate_combined_incident_message(creator_info, checklist_results, issue_key, slack_user_id, parsed_data):
+    """Generate a combined incident analysis and creator outreach message using structured checklist"""
     try:
         creator_name = creator_info.get("display_name", "").split()[0] if creator_info.get("display_name") else "there"
         user_mention = f"<@{slack_user_id}>" if slack_user_id else creator_name
@@ -509,28 +639,37 @@ def generate_combined_incident_message(creator_info, missing_info_analysis, issu
         # Get a short summary of the incident
         incident_summary = parsed_data.get('summary', '')[:200] + ('...' if len(parsed_data.get('summary', '')) > 200 else '')
         
-        prompt = f"""You are a helpful incident response bot for a fun veterinary software company. Generate a single, comprehensive message that combines incident analysis with creator outreach for ticket {issue_key}.
+        # Check if we have missing items
+        missing_items = checklist_results.get('missing_items', [])
+        found_items = checklist_results.get('found_items', [])
+        
+        if not missing_items:
+            # All investigation items are present
+            return f"{user_mention} **Incident Summary:** {incident_summary}\n\nThanks for reporting incident {issue_key}! 🎉 You did fantastic work providing all the key investigation details we need. A developer is on the way to help resolve this. The comprehensive information you provided will help us investigate this efficiently!"
+        
+        # Generate specific requests for missing items
+        missing_items_request = generate_missing_items_requests(missing_items, issue_key, parsed_data)
+        
+        prompt = f"""You are a helpful incident response bot for a veterinary software company. Create a supportive message that combines incident acknowledgment with specific investigation requests.
 
-INCIDENT SUMMARY: {incident_summary}
+INCIDENT: {issue_key}
+SUMMARY: {incident_summary}
+CREATOR: {creator_name}
 
-CREATOR INFO:
-Name: {creator_name}
+FOUND ITEMS ({len(found_items)}): {', '.join([item['item'] for item in found_items[:3]])}{'...' if len(found_items) > 3 else ''}
 
-MISSING INFORMATION ANALYSIS:
-{missing_info_analysis}
+MISSING ITEMS REQUEST:
+{missing_items_request}
 
-Create a unified message that:
-1. Briefly summarizes the incident in 1-2 sentences
-2. Thanks the creator for their great work reporting it
-3. Mentions that a developer is on the way
-4. Asks for specific missing information (based on the analysis) in a friendly, collaborative way
-5. Keeps it concise but comprehensive - useful for both the creator and other responders
-6. Maintains an encouraging, supportive tone (incidents can be stressful)
-7. Emphasizes we're all working together to help veterinary practices
+Create a message that:
+1. Briefly acknowledges the incident in 1-2 sentences
+2. Thanks the creator for their work reporting it
+3. Mentions a developer is on the way
+4. Includes the specific missing items request
+5. Maintains an encouraging, collaborative tone
+6. Keeps it concise and well-organized
 
-Format it as a single, well-organized message. Use bullet points for the information requests to keep it scannable. Keep it conversational but professional.
-
-The message should be suitable for posting in a Slack channel. Don't include the person's name at the beginning since it will be mentioned separately. Don't include channel mentions or formatting beyond basic Slack markdown."""
+Don't include the person's name at the beginning since it will be mentioned separately. Use friendly but professional language."""
 
         fallback_models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
         models_to_try = [GEMINI_MODEL] + [m for m in fallback_models if m != GEMINI_MODEL]
@@ -543,7 +682,6 @@ The message should be suitable for posting in a Slack channel. Don't include the
                 
                 if hasattr(response, 'text') and response.text:
                     message = response.text.strip()
-                    # Add user mention at the beginning
                     final_message = f"{user_mention} {message}"
                     print(f"Successfully generated combined incident message with model: {model_name}")
                     return final_message
@@ -559,7 +697,8 @@ The message should be suitable for posting in a Slack channel. Don't include the
                 continue
         
         # Fallback message if AI fails
-        return f"{user_mention} **Incident Summary:** {incident_summary}\n\nThanks for reporting incident {issue_key}! You did great work getting this submitted. A developer is on the way to help. To help us resolve this faster, please share any additional details like reproduction steps, error messages, environment info, or screenshots. We're working to get this resolved as quickly as possible!"
+        fallback_message = f"**Incident Summary:** {incident_summary}\n\nThanks for reporting incident {issue_key}! A developer is on the way to help.\n\n{missing_items_request}"
+        return f"{user_mention} {fallback_message}"
         
     except Exception as e:
         print(f"Error generating combined incident message: {e}")
