@@ -5,6 +5,13 @@ import datetime
 import hashlib
 import requests
 import google.generativeai as genai
+import mimetypes
+from io import BytesIO
+try:
+    from PIL import Image
+except ImportError:
+    print("Warning: Pillow not available, image validation will be limited")
+    Image = None
 
 # --- ENVIRONMENT VARIABLES ---
 SLACK_BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
@@ -34,6 +41,8 @@ JIRA_SUMMARY_FIELD = "customfield_10250"
 # - chat:write            (post messages)
 # - users:read.email      (lookup users by email - required for creator outreach)
 # - users:read            (get user information)
+# - files:write           (upload media files from Jira attachments)
+# - files:read            (read file information for error handling)
 
 # --- DEDUPLICATION CACHE ---
 # Simple in-memory cache for deduplication (resets on each Lambda cold start)
@@ -193,6 +202,35 @@ def process_fire_ticket(event_data, user_id):
         except Exception as e:
             print(f"Error in ticket analysis and outreach: {e}")
             # Don't fail the entire process if this step fails
+        
+        # NEW: Process media attachments from Jira ticket
+        try:
+            media_cache_key = f"media_{issue_key}"
+            if media_cache_key not in processed_events:
+                processed_events.add(media_cache_key)
+                
+                print(f"Processing media attachments for {issue_key}")
+                attachments = fetch_jira_attachments(issue_key)
+                
+                if attachments:
+                    print(f"Found {len(attachments)} media attachments, processing...")
+                    media_files = download_and_process_media(attachments)
+                    
+                    if media_files:
+                        uploaded_files = upload_media_to_slack(media_files, channel_id, issue_key)
+                        post_media_summary(channel_id, uploaded_files, issue_key)
+                        print(f"Successfully processed {len(uploaded_files)} media files for {issue_key}")
+                    else:
+                        print(f"No valid media files to upload for {issue_key}")
+                else:
+                    print(f"No media attachments found for {issue_key}")
+            else:
+                print(f"Media for {issue_key} already processed, skipping")
+                
+        except Exception as e:
+            print(f"Error in media processing for {issue_key}: {e}")
+            # Don't fail the entire process if media processing fails
+            processed_events.discard(f"media_{issue_key}")  # Allow retry on next run
         
         print(f"Successfully processed fire ticket for {issue_key}")
         
@@ -634,6 +672,212 @@ Please provide a concise summary in plain English suitable for a Slack incident 
             continue  # Try next model
     
     return "Gemini summary could not be generated."
+
+def fetch_jira_attachments(issue_key):
+    """Fetches media attachments from a Jira ticket."""
+    try:
+        url = f"https://{JIRA_DOMAIN}/rest/api/3/issue/{issue_key}"
+        print(f"Fetching Jira ticket with attachments: {url}")
+        
+        response = requests.get(
+            url,
+            auth=(JIRA_USERNAME, JIRA_API_TOKEN),
+            headers={"Accept": "application/json"},
+            params={"expand": "attachment"}
+        )
+        
+        if response.status_code != 200:
+            print(f"Failed to fetch Jira attachments: {response.status_code} - {response.text}")
+            return []
+        
+        ticket = response.json()
+        attachments = ticket.get("fields", {}).get("attachment", [])
+        
+        # Filter for media files (images and videos)
+        media_attachments = []
+        for attachment in attachments:
+            mime_type = attachment.get("mimeType", "")
+            filename = attachment.get("filename", "")
+            
+            if mime_type.startswith(("image/", "video/")):
+                media_info = {
+                    "id": attachment.get("id"),
+                    "filename": filename,
+                    "mimeType": mime_type,
+                    "size": attachment.get("size", 0),
+                    "content": attachment.get("content"),  # Download URL
+                    "created": attachment.get("created"),
+                    "author": attachment.get("author", {}).get("displayName", "Unknown")
+                }
+                media_attachments.append(media_info)
+                print(f"Found media attachment: {filename} ({mime_type}, {media_info['size']} bytes)")
+        
+        print(f"Found {len(media_attachments)} media attachments for {issue_key}")
+        return media_attachments
+        
+    except Exception as e:
+        print(f"Error fetching Jira attachments for {issue_key}: {e}")
+        return []
+
+def download_and_process_media(attachments):
+    """Downloads and validates media files from Jira attachments."""
+    processed_files = []
+    
+    # Slack file size limits (1GB max, but we'll be conservative)
+    MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB limit
+    
+    for attachment in attachments:
+        try:
+            filename = attachment["filename"]
+            file_size = attachment["size"]
+            mime_type = attachment["mimeType"]
+            download_url = attachment["content"]
+            
+            # Check file size before downloading
+            if file_size > MAX_FILE_SIZE:
+                print(f"Skipping {filename}: file too large ({file_size} bytes)")
+                continue
+            
+            print(f"Downloading {filename} ({file_size} bytes)")
+            
+            # Download the file
+            download_response = requests.get(
+                download_url,
+                auth=(JIRA_USERNAME, JIRA_API_TOKEN),
+                stream=True  # Stream large files
+            )
+            
+            if download_response.status_code != 200:
+                print(f"Failed to download {filename}: {download_response.status_code}")
+                continue
+            
+            # Read file content
+            file_content = download_response.content
+            
+            # Basic validation for images
+            if mime_type.startswith("image/") and Image:
+                try:
+                    # Validate image by opening it
+                    img = Image.open(BytesIO(file_content))
+                    img.verify()  # Verify it's a valid image
+                    print(f"Validated image: {filename} ({img.size[0]}x{img.size[1]})")
+                except Exception as e:
+                    print(f"Invalid image {filename}: {e}")
+                    continue
+            
+            # Store processed file info
+            processed_file = {
+                "filename": filename,
+                "content": file_content,
+                "mime_type": mime_type,
+                "size": len(file_content),
+                "author": attachment["author"],
+                "created": attachment["created"]
+            }
+            
+            processed_files.append(processed_file)
+            print(f"Successfully processed: {filename}")
+            
+        except Exception as e:
+            print(f"Error processing attachment {attachment.get('filename', 'unknown')}: {e}")
+            continue
+    
+    print(f"Successfully processed {len(processed_files)} media files")
+    return processed_files
+
+def upload_media_to_slack(media_files, channel_id, issue_key):
+    """Uploads media files to a Slack channel."""
+    if not media_files:
+        print("No media files to upload")
+        return []
+    
+    uploaded_files = []
+    
+    for media_file in media_files:
+        try:
+            filename = media_file["filename"]
+            content = media_file["content"]
+            mime_type = media_file["mime_type"]
+            author = media_file["author"]
+            created = media_file["created"]
+            
+            print(f"Uploading {filename} to Slack channel {channel_id}")
+            
+            # Prepare the upload
+            files = {
+                'file': (filename, content, mime_type)
+            }
+            
+            data = {
+                'channels': channel_id,
+                'title': f"Attachment from {issue_key}",
+                'initial_comment': f"📎 **{filename}** (uploaded by {author} on {created[:10]})\nFrom Jira ticket {issue_key}",
+                'filetype': mime_type.split('/')[-1] if '/' in mime_type else 'auto'
+            }
+            
+            # Upload file using files.upload API
+            response = requests.post(
+                "https://slack.com/api/files.upload",
+                headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}"},
+                files=files,
+                data=data
+            )
+            
+            result = response.json()
+            
+            if result.get("ok"):
+                file_info = result.get("file", {})
+                uploaded_files.append({
+                    "filename": filename,
+                    "slack_file_id": file_info.get("id"),
+                    "permalink": file_info.get("permalink"),
+                    "size": media_file["size"]
+                })
+                print(f"Successfully uploaded {filename}")
+            else:
+                error = result.get("error", "unknown error")
+                print(f"Failed to upload {filename}: {error}")
+                
+        except Exception as e:
+            print(f"Error uploading {media_file.get('filename', 'unknown')}: {e}")
+            continue
+    
+    print(f"Successfully uploaded {len(uploaded_files)} files to Slack")
+    return uploaded_files
+
+def post_media_summary(channel_id, uploaded_files, issue_key):
+    """Posts a summary message about uploaded media files."""
+    if not uploaded_files:
+        return
+    
+    try:
+        file_count = len(uploaded_files)
+        total_size = sum(f["size"] for f in uploaded_files)
+        size_mb = total_size / (1024 * 1024)
+        
+        if file_count == 1:
+            summary_text = f"📸 Uploaded 1 media file from {issue_key} ({size_mb:.1f} MB)"
+        else:
+            summary_text = f"📸 Uploaded {file_count} media files from {issue_key} ({size_mb:.1f} MB total)"
+        
+        response = requests.post(
+            "https://slack.com/api/chat.postMessage",
+            headers=SLACK_HEADERS,
+            json={
+                "channel": channel_id,
+                "text": summary_text,
+                "unfurl_links": False,
+                "unfurl_media": False
+            }
+        ).json()
+        
+        if response.get("ok"):
+            print("Successfully posted media summary message")
+        else:
+            print(f"Error posting media summary: {response.get('error')}")
+            
+    except Exception as e:
+        print(f"Error posting media summary: {e}")
 
 # --- SLACK HELPER FUNCTIONS ---
 def create_incident_channel(base_name):
