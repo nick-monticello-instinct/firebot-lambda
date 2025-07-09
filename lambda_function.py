@@ -136,20 +136,32 @@ def create_event_id(event_data):
     user = event_data.get("user", "")
     text = event_data.get("text", "")
     timestamp = event_data.get("ts", "")  # Slack event timestamp
+    bot_id = event_data.get("bot_id", "")
+    app_id = event_data.get("app_id", "")
+    subtype = event_data.get("subtype", "")
     
     # Extract Jira issue key from text for more targeted deduplication
     issue_match = re.search(r"(ISD-\d{5})", text)
     issue_key = issue_match.group(1) if issue_match else ""
     
-    # Create identifier based on what really matters: user + channel + issue + timestamp
-    unique_string = f"{channel}_{user}_{issue_key}_{timestamp}"
+    # Create more specific identifier that distinguishes user messages from bot messages
+    is_bot = bool(bot_id or app_id)
+    message_type = "bot" if is_bot else "user"
+    
+    # Include subtype to distinguish channel_join events
+    if subtype:
+        message_type = f"{message_type}_{subtype}"
+    
+    # Create identifier based on what really matters: user + channel + issue + timestamp + message type
+    unique_string = f"{channel}_{user}_{issue_key}_{timestamp}_{message_type}"
     event_id = hashlib.md5(unique_string.encode()).hexdigest()[:16]
     
-    # Log for debugging
+    # Log for debugging with more detail
     print(f"Event deduplication - Channel: {channel}, User: {user}, Issue: {issue_key}, Timestamp: {timestamp}")
+    print(f"Message type: {message_type}, Bot ID: {bot_id}, App ID: {app_id}, Subtype: {subtype}")
     print(f"Generated event ID: {event_id}")
+    print(f"Text preview: {text[:100]}..." if len(text) > 100 else f"Text: {text}")
     print(f"Current cache size: {len(processed_events)}")
-    print(f"Current cache contents: {list(processed_events)}")
     
     return event_id
 
@@ -178,12 +190,8 @@ def process_fire_ticket(event_data, user_id):
     issue_key = issue_match.group(1)
     print(f"Found Jira issue: {issue_key}")
     
-    # Check if this incident has already been processed (persistent check across Lambda executions)
-    if check_incident_already_processed(issue_key):
-        print(f"Incident {issue_key} has already been processed recently, skipping")
-        return
-    
     try:
+        # Fetch Jira data first to validate the ticket exists
         jira_data = fetch_jira_data(issue_key)
         if jira_data.status_code != 200:
             raise Exception(f"Failed to fetch Jira ticket data: {jira_data.text}")
@@ -194,9 +202,11 @@ def process_fire_ticket(event_data, user_id):
         parsed_data = parse_jira_ticket(ticket)
         print(f"Parsed ticket data - Summary length: {len(parsed_data['summary'])}, Description length: {len(parsed_data['description'])}")
         
-        summary = generate_gemini_summary(parsed_data)
-        print(f"Generated summary length: {len(summary)}")
-
+        # Check if this incident has already been fully processed
+        if check_incident_already_processed(issue_key):
+            print(f"Incident {issue_key} has already been fully processed, skipping")
+            return
+        
         # Extract hospital name and format for channel name
         hospital_name = extract_hospital_name(ticket)
         hospital_slug = format_hospital_for_channel(hospital_name)
@@ -205,35 +215,54 @@ def process_fire_ticket(event_data, user_id):
         channel_slug = issue_key.lower()
         base_channel_name = f"incident-{channel_slug}-{date_str}-{hospital_slug}"
         
+        # Step 1: Create or find incident channel
         channel_id, channel_name = create_incident_channel(base_channel_name)
         print(f"Created/found channel: {channel_name} ({channel_id})")
 
+        # Step 2: Invite user to channel
         invite_user_to_channel(user_id, channel_id)
-        post_welcome_message(event_data["event"]["channel"], channel_name, channel_id)
         
-        # Check if we've already posted the summary for this incident
+        # Step 3: Post welcome message (only once per incident)
+        welcome_cache_key = f"welcome_{issue_key}"
+        if welcome_cache_key not in processed_events:
+            processed_events.add(welcome_cache_key)
+            post_welcome_message(event_data["event"]["channel"], channel_name, channel_id)
+            print(f"Posted welcome message for {issue_key}")
+        else:
+            print(f"Welcome message for {issue_key} already posted, skipping")
+        
+        # Step 4: Generate and post summary (only once per incident)
         summary_cache_key = f"summary_{issue_key}"
         if summary_cache_key not in processed_events:
             processed_events.add(summary_cache_key)
+            summary = generate_gemini_summary(parsed_data)
+            print(f"Generated summary length: {len(summary)}")
             post_summary_message(channel_id, summary)
+            print(f"Posted summary for {issue_key}")
         else:
             print(f"Summary for {issue_key} already posted, skipping")
         
-        # NEW: Fetch attachments once for both analysis and media processing
+        # Step 5: Fetch attachments once for both analysis and media processing
         print(f"Fetching attachments for analysis and media processing: {issue_key}")
         attachments = fetch_jira_attachments(issue_key)
         
-        # NEW: Analyze ticket for missing information and reach out to creator
-        try:
-            analyze_and_reach_out_to_creator(ticket, channel_id, issue_key, attachments)
-        except Exception as e:
-            print(f"Error in ticket analysis and outreach: {e}")
-            # Don't fail the entire process if this step fails
+        # Step 6: Analyze ticket for missing information and reach out to creator (critical step)
+        analysis_cache_key = f"analysis_{issue_key}"
+        if analysis_cache_key not in processed_events:
+            print(f"Starting analysis and outreach for {issue_key}")
+            try:
+                analyze_and_reach_out_to_creator(ticket, channel_id, issue_key, attachments)
+                print(f"Successfully completed analysis and outreach for {issue_key}")
+            except Exception as e:
+                print(f"Error in ticket analysis and outreach for {issue_key}: {e}")
+                # Don't fail the entire process, but don't mark as processed either
+        else:
+            print(f"Analysis for {issue_key} already completed, skipping")
         
-        # NEW: Process media attachments from Jira ticket
-        try:
-            media_cache_key = f"media_{issue_key}"
-            if media_cache_key not in processed_events:
+        # Step 7: Process media attachments from Jira ticket
+        media_cache_key = f"media_{issue_key}"
+        if media_cache_key not in processed_events:
+            try:
                 processed_events.add(media_cache_key)
                 
                 if attachments:
@@ -248,13 +277,12 @@ def process_fire_ticket(event_data, user_id):
                         print(f"No valid media files to upload for {issue_key}")
                 else:
                     print(f"No media attachments found for {issue_key}")
-            else:
-                print(f"Media for {issue_key} already processed, skipping")
-                
-        except Exception as e:
-            print(f"Error in media processing for {issue_key}: {e}")
-            # Don't fail the entire process if media processing fails
-            processed_events.discard(f"media_{issue_key}")  # Allow retry on next run
+            except Exception as e:
+                print(f"Error in media processing for {issue_key}: {e}")
+                # Don't fail the entire process if media processing fails
+                processed_events.discard(media_cache_key)  # Allow retry on next run
+        else:
+            print(f"Media for {issue_key} already processed, skipping")
         
         print(f"Successfully processed fire ticket for {issue_key}")
         
@@ -265,15 +293,6 @@ def process_fire_ticket(event_data, user_id):
 def analyze_and_reach_out_to_creator(ticket, channel_id, issue_key, attachments):
     """Analyze ticket for missing info and reach out to creator"""
     print(f"Analyzing ticket {issue_key} for missing information...")
-    
-    # Check if we've already processed this incident's analysis
-    analysis_cache_key = f"analysis_{issue_key}"
-    if analysis_cache_key in processed_events:
-        print(f"Analysis for {issue_key} already completed, skipping")
-        return
-    
-    # Mark this analysis as being processed
-    processed_events.add(analysis_cache_key)
     
     try:
         # Extract creator information from Jira
@@ -307,11 +326,11 @@ def analyze_and_reach_out_to_creator(ticket, channel_id, issue_key, attachments)
         
         post_creator_outreach_message(channel_id, combined_message, slack_user_id)
         
+        # Mark analysis as completed in the main cache
+        processed_events.add(f"analysis_{issue_key}")
         print(f"Successfully completed analysis and outreach for {issue_key}")
         
     except Exception as e:
-        # Remove from cache if processing failed so it can be retried
-        processed_events.discard(analysis_cache_key)
         print(f"Error in analyze_and_reach_out_to_creator: {e}")
         raise
 
@@ -1150,7 +1169,7 @@ def post_summary_message(channel_id, summary):
         print(f"Error posting summary message: {response.get('error')}")
 
 def check_incident_already_processed(issue_key):
-    """Check if this incident has already been processed by looking for existing active channel"""
+    """Check if this incident has already been processed by looking for existing active channel with completed workflow"""
     try:
         date_str = datetime.datetime.now().strftime("%Y%m%d")
         # Create pattern to match channels for this incident (with any hospital name)
@@ -1173,25 +1192,29 @@ def check_incident_already_processed(issue_key):
             if channel_name.startswith(incident_pattern):
                 if not channel.get("is_archived"):
                     print(f"Found existing active channel: {channel_name}")
-                    # Check if channel has recent activity (last 5 minutes)
                     channel_id = channel["id"]
-                    messages = get_recent_channel_messages(channel_id)
-                    if messages:
-                        print(f"Channel {channel_name} has recent activity, incident already processed")
+                    
+                    # Check if the workflow has been completed by looking for specific bot messages
+                    if is_incident_workflow_completed(channel_id, issue_key):
+                        print(f"Incident {issue_key} workflow already completed in channel {channel_name}")
                         return True
+                    else:
+                        print(f"Channel {channel_name} exists but workflow not completed, allowing processing")
+                        return False
         
+        print(f"No existing channel found for incident {issue_key}, proceeding with processing")
         return False
         
     except Exception as e:
         print(f"Error checking if incident already processed: {e}")
         return False
 
-def get_recent_channel_messages(channel_id):
-    """Get messages from the last 5 minutes to check for recent activity"""
+def is_incident_workflow_completed(channel_id, issue_key):
+    """Check if the full incident workflow has been completed by looking for analysis message"""
     try:
-        # Get messages from last 5 minutes
-        five_minutes_ago = datetime.datetime.now() - datetime.timedelta(minutes=5)
-        oldest_timestamp = five_minutes_ago.timestamp()
+        # Get messages from the last hour to check for workflow completion
+        one_hour_ago = datetime.datetime.now() - datetime.timedelta(hours=1)
+        oldest_timestamp = one_hour_ago.timestamp()
         
         response = requests.get(
             "https://slack.com/api/conversations.history",
@@ -1199,16 +1222,36 @@ def get_recent_channel_messages(channel_id):
             params={
                 "channel": channel_id,
                 "oldest": oldest_timestamp,
-                "limit": 10
+                "limit": 50  # Check more messages
             }
         ).json()
         
-        if response.get("ok"):
-            return response.get("messages", [])
-        else:
-            print(f"Warning: Could not get channel history: {response}")
-            return []
-            
+        if not response.get("ok"):
+            print(f"Warning: Could not get channel history for workflow check: {response}")
+            return False
+        
+        messages = response.get("messages", [])
+        
+        # Look for specific indicators that the full workflow has completed
+        workflow_indicators = [
+            "Thanks for reporting incident",  # Creator outreach message
+            "additional details",            # Analysis request
+            "A developer is on the way",     # Acknowledgment message
+        ]
+        
+        completed_steps = 0
+        for message in messages:
+            message_text = message.get("text", "")
+            for indicator in workflow_indicators:
+                if indicator in message_text:
+                    completed_steps += 1
+                    break
+        
+        # If we found evidence of the analysis/outreach workflow, consider it completed
+        workflow_completed = completed_steps >= 1
+        print(f"Workflow completion check: found {completed_steps} indicators, completed: {workflow_completed}")
+        return workflow_completed
+        
     except Exception as e:
-        print(f"Error getting channel messages: {e}")
-        return []
+        print(f"Error checking workflow completion: {e}")
+        return False
