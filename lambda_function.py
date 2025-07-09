@@ -1884,21 +1884,46 @@ def create_atomic_lock_channel(channel_name, issue_key):
                 print(f"Lock channel {channel_name} is recent, another instance is processing")
                 return False
             else:
-                print(f"Lock channel {channel_name} is old, cleaning up and proceeding")
-                cleanup_temp_lock_channel(channel_name)
-                # Try to create again after cleanup
-                retry_response = requests.post(
-                    "https://slack.com/api/conversations.create",
-                    headers=SLACK_HEADERS,
-                    json={"name": channel_name, "is_private": False}
-                ).json()
-                
-                if retry_response.get("ok"):
-                    print(f"Successfully created atomic lock channel after cleanup: {channel_name}")
-                    return True
+                print(f"Lock channel {channel_name} is old, checking if it's archived")
+                if is_channel_archived(channel_name):
+                    print(f"Lock channel {channel_name} is archived, using timestamp suffix")
+                    import time
+                    timestamp = int(time.time())
+                    new_channel_name = f"{channel_name}-{timestamp}"
+                    
+                    timestamp_response = requests.post(
+                        "https://slack.com/api/conversations.create",
+                        headers=SLACK_HEADERS,
+                        json={"name": new_channel_name, "is_private": False}
+                    ).json()
+                    
+                    if timestamp_response.get("ok"):
+                        print(f"Successfully created atomic lock channel with timestamp: {new_channel_name}")
+                        return True
+                    else:
+                        print(f"Failed to create atomic lock channel with timestamp: {timestamp_response.get('error')}")
+                        return False
                 else:
-                    print(f"Failed to create atomic lock channel after cleanup: {retry_response.get('error')}")
-                    return False
+                    print(f"Lock channel {channel_name} is old but not archived, cleaning up and proceeding")
+                    cleanup_temp_lock_channel(channel_name)
+                    
+                    # Wait a moment for cleanup to complete
+                    import time
+                    time.sleep(1)
+                    
+                    # Try to create again after cleanup
+                    retry_response = requests.post(
+                        "https://slack.com/api/conversations.create",
+                        headers=SLACK_HEADERS,
+                        json={"name": channel_name, "is_private": False}
+                    ).json()
+                    
+                    if retry_response.get("ok"):
+                        print(f"Successfully created atomic lock channel after cleanup: {channel_name}")
+                        return True
+                    else:
+                        print(f"Failed to create atomic lock channel after cleanup: {retry_response.get('error')}")
+                        return False
         else:
             print(f"Failed to create atomic lock channel {channel_name}: {create_response.get('error')}")
             return False
@@ -1940,6 +1965,33 @@ def is_lock_channel_recent(channel_name):
     except Exception as e:
         print(f"Error checking lock channel age: {e}")
         return True  # Assume recent if we can't check
+
+def is_channel_archived(channel_name):
+    """Check if a channel is archived"""
+    try:
+        response = requests.get(
+            "https://slack.com/api/conversations.list",
+            headers=SLACK_HEADERS,
+            params={"exclude_archived": "false", "limit": 1000}
+        ).json()
+        
+        if not response.get("ok"):
+            print(f"Could not list channels to check archive status: {response.get('error')}")
+            return False
+        
+        channels = response.get("channels", [])
+        for channel in channels:
+            if channel.get("name") == channel_name:
+                is_archived = channel.get("is_archived", False)
+                print(f"Channel {channel_name} archived status: {is_archived}")
+                return is_archived
+        
+        print(f"Channel {channel_name} not found in channel list")
+        return False
+        
+    except Exception as e:
+        print(f"Error checking channel archive status: {e}")
+        return False
 
 def cleanup_temp_lock_channel(channel_name):
     """Deletes the temporary channel used for atomic lock."""
