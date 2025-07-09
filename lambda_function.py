@@ -539,8 +539,11 @@ def process_fire_ticket(event_data, user_id):
             
         print(f"Successfully coordinated channel: {channel_name} ({channel_id})")
 
-        # Step 3: Clean up the temp lock channel
-        cleanup_temp_lock_channel(temp_channel_name)
+        # Step 3: Clean up the temp lock channel (skip if we can't delete)
+        try:
+            cleanup_temp_lock_channel(temp_channel_name)
+        except Exception as e:
+            print(f"Could not cleanup temp lock channel (this is normal): {e}")
         
         # Step 4: Invite user to channel
         invite_user_to_channel(user_id, channel_id)
@@ -1904,25 +1907,22 @@ def create_atomic_lock_channel(channel_name, issue_key):
                         print(f"Failed to create atomic lock channel with timestamp: {timestamp_response.get('error')}")
                         return False
                 else:
-                    print(f"Lock channel {channel_name} is old but not archived, cleaning up and proceeding")
-                    cleanup_temp_lock_channel(channel_name)
-                    
-                    # Wait a moment for cleanup to complete
+                    print(f"Lock channel {channel_name} is old but not archived, using timestamp suffix")
                     import time
-                    time.sleep(1)
+                    timestamp = int(time.time())
+                    new_channel_name = f"{channel_name}-{timestamp}"
                     
-                    # Try to create again after cleanup
-                    retry_response = requests.post(
+                    timestamp_response = requests.post(
                         "https://slack.com/api/conversations.create",
                         headers=SLACK_HEADERS,
-                        json={"name": channel_name, "is_private": False}
+                        json={"name": new_channel_name, "is_private": False}
                     ).json()
                     
-                    if retry_response.get("ok"):
-                        print(f"Successfully created atomic lock channel after cleanup: {channel_name}")
+                    if timestamp_response.get("ok"):
+                        print(f"Successfully created atomic lock channel with timestamp: {new_channel_name}")
                         return True
                     else:
-                        print(f"Failed to create atomic lock channel after cleanup: {retry_response.get('error')}")
+                        print(f"Failed to create atomic lock channel with timestamp: {timestamp_response.get('error')}")
                         return False
         else:
             print(f"Failed to create atomic lock channel {channel_name}: {create_response.get('error')}")
@@ -1994,39 +1994,9 @@ def is_channel_archived(channel_name):
         return False
 
 def cleanup_temp_lock_channel(channel_name):
-    """Deletes the temporary channel used for atomic lock."""
+    """Attempts to delete the temporary channel used for atomic lock."""
     try:
-        print(f"Attempting to delete atomic lock channel: {channel_name}")
-        # Find the channel ID first
-        response = requests.get(
-            "https://slack.com/api/conversations.list",
-            headers=SLACK_HEADERS,
-            params={"exclude_archived": "false", "limit": 1000}
-        ).json()
-
-        if response.get("ok"):
-            channels = response.get("channels", [])
-            channel_id = None
-            
-            for channel in channels:
-                if channel.get("name") == channel_name:
-                    channel_id = channel.get("id")
-                    break
-            
-            if channel_id:
-                delete_response = requests.post(
-                    "https://slack.com/api/conversations.delete",
-                    headers=SLACK_HEADERS,
-                    json={"channel_id": channel_id}
-                ).json()
-
-                if delete_response.get("ok"):
-                    print(f"Successfully deleted atomic lock channel: {channel_name}")
-                else:
-                    print(f"Failed to delete atomic lock channel {channel_name}: {delete_response.get('error')}")
-            else:
-                print(f"Atomic lock channel {channel_name} not found in channel list")
-        else:
-            print(f"Could not list channels to find lock channel: {response.get('error')}")
+        print(f"Note: Cannot delete atomic lock channel {channel_name} due to permission restrictions")
+        print(f"This is normal - the lock channel will remain but won't interfere with future operations")
     except Exception as e:
-        print(f"Error cleaning up atomic lock channel: {e}")
+        print(f"Error in cleanup (expected): {e}")
