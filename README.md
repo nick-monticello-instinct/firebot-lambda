@@ -42,6 +42,12 @@ FireBot analyzes each ticket against 7 critical investigation items:
 - **Duplicate Prevention**: Smart caching prevents duplicate processing
 - **Bot Message Filtering**: Avoids processing its own messages
 
+### 🤖 **Interactive Commands**
+- **Channel Summary**: `firebot summary` - Generate comprehensive incident summaries using AI
+- **Duration Tracking**: `firebot time` - Show how long the incident has been open
+- **Smart Detection**: Only responds to commands in incident channels
+- **AI-Powered Analysis**: Uses Gemini to analyze channel history and provide insights
+
 ## 🚀 Getting Started
 
 ### Prerequisites
@@ -82,6 +88,8 @@ users:read.email      # Lookup users by email
 users:read            # Get user information
 files:write           # Upload media files
 files:read            # Read file information
+groups:history        # Read channel history for firebot commands
+channels:history      # Read channel history for firebot commands
 ```
 
 ### Dependencies
@@ -137,6 +145,15 @@ Pillow>=9.0.0
 
 5. **Creator Outreach**: Invites ticket creator and provides specific guidance on missing information
 
+### Interactive Commands
+
+Once in an incident channel, users can interact with FireBot:
+
+```
+firebot summary  # Generate comprehensive incident summary
+firebot time     # Show incident duration
+```
+
 ### Sample Output
 
 **Channel Creation Message:**
@@ -165,6 +182,31 @@ To help our development team investigate more efficiently, could you please prov
 • Practice-wide impact - Is this affecting all users or specific team members?
 
 This information will help us resolve the issue faster. Thanks for your collaboration! 🐾
+```
+
+**FireBot Commands Output:**
+
+**Summary Command:**
+```
+📋 **Incident Summary**
+
+Key Events:
+• 14:30 - Issue first reported by @john
+• 14:45 - @sarah joined to investigate
+• 15:00 - Root cause identified as database connection issue
+• 15:15 - Fix deployed to staging
+
+Current Status: Monitoring fix in production
+People Involved: @john (reporter), @sarah (developer), @mike (devops)
+Next Steps: Verify fix resolves issue for all users
+```
+
+**Time Command:**
+```
+⏰ **Incident Duration**
+
+This incident has been open for: **2 hours and 45 minutes**
+Started: 2025-01-09 14:30:00 UTC
 ```
 
 ## 🔧 Configuration

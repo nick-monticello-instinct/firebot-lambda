@@ -44,6 +44,8 @@ JIRA_SUMMARY_FIELD = "customfield_10250"
 # - users:read            (get user information)
 # - files:write           (upload media files from Jira attachments)
 # - files:read            (read file information for error handling)
+# - groups:history        (read channel history for firebot summary command)
+# - channels:history      (read channel history for firebot summary command)
 
 # --- INVESTIGATION CHECKLIST ---
 # The bot analyzes each ticket against these 7 critical investigation items:
@@ -125,9 +127,13 @@ def lambda_handler(event, context=None):
                 
                 # Quick response to Slack to prevent webhook timeout/retry
                 try:
-                    process_fire_ticket(body, user_id)
+                    # Check if this is a firebot command in an incident channel
+                    if is_firebot_command(event_data):
+                        process_firebot_command(event_data, user_id)
+                    else:
+                        process_fire_ticket(body, user_id)
                 except Exception as err:
-                    print("Error during fire ticket processing:", err)
+                    print("Error during processing:", err)
                     # Remove from processed events if processing failed
                     processed_events.discard(event_id)
                     print(f"Removed failed event from cache: {event_id}")
@@ -181,6 +187,290 @@ def create_event_id(event_data):
     print(f"Current cache size: {len(processed_events)}")
     
     return event_id
+
+def is_firebot_command(event_data):
+    """Check if the message is a firebot command in an incident channel"""
+    try:
+        text = event_data.get("text", "").strip().lower()
+        channel_id = event_data.get("channel", "")
+        
+        # Check if message starts with "firebot"
+        if not text.startswith("firebot"):
+            return False
+        
+        # Check if we're in an incident channel
+        if not is_incident_channel(channel_id):
+            return False
+        
+        print(f"Detected firebot command: {text}")
+        return True
+        
+    except Exception as e:
+        print(f"Error checking firebot command: {e}")
+        return False
+
+def is_incident_channel(channel_id):
+    """Check if the channel is an incident channel"""
+    try:
+        response = requests.get(
+            "https://slack.com/api/conversations.info",
+            headers=SLACK_HEADERS,
+            params={"channel": channel_id}
+        ).json()
+        
+        if not response.get("ok"):
+            print(f"Could not get channel info: {response.get('error')}")
+            return False
+        
+        channel_name = response.get("channel", {}).get("name", "")
+        return channel_name.startswith("incident-")
+        
+    except Exception as e:
+        print(f"Error checking if incident channel: {e}")
+        return False
+
+def process_firebot_command(event_data, user_id):
+    """Process firebot commands in incident channels"""
+    try:
+        text = event_data.get("text", "").strip().lower()
+        channel_id = event_data.get("channel", "")
+        
+        # Skip messages from bots to prevent processing our own messages
+        if event_data.get("bot_id") or event_data.get("app_id"):
+            print("Skipping bot message to prevent duplicate processing")
+            return
+        
+        # Additional check: skip if the message is from our specific bot user
+        bot_user_ids = [os.environ.get("SLACK_BOT_USER_ID"), "U09584DT15X"]
+        if user_id in [uid for uid in bot_user_ids if uid]:
+            print(f"Skipping message from bot user {user_id} to prevent duplicate processing")
+            return
+        
+        # Parse the command
+        parts = text.split()
+        if len(parts) < 2:
+            print("Invalid firebot command - missing subcommand")
+            return
+        
+        command = parts[1]
+        
+        if command == "summary":
+            handle_firebot_summary(channel_id, user_id)
+        elif command == "time":
+            handle_firebot_time(channel_id, user_id)
+        else:
+            print(f"Unknown firebot command: {command}")
+            post_firebot_help(channel_id)
+            
+    except Exception as e:
+        print(f"Error processing firebot command: {e}")
+
+def handle_firebot_summary(channel_id, user_id):
+    """Generate a comprehensive summary of the incident channel"""
+    try:
+        print(f"Generating incident summary for channel {channel_id}")
+        
+        # Get channel history
+        messages = get_channel_history(channel_id)
+        if not messages:
+            post_message(channel_id, "Could not retrieve channel history for summary.")
+            return
+        
+        # Generate summary using AI
+        summary = generate_incident_summary(messages, channel_id)
+        
+        # Post the summary
+        post_message(channel_id, f"📋 **Incident Summary**\n\n{summary}")
+        
+    except Exception as e:
+        print(f"Error generating incident summary: {e}")
+        post_message(channel_id, "Sorry, I encountered an error while generating the summary.")
+
+def handle_firebot_time(channel_id, user_id):
+    """Calculate and display how long the incident has been open"""
+    try:
+        print(f"Calculating incident duration for channel {channel_id}")
+        
+        # Get channel creation time
+        channel_info = get_channel_info(channel_id)
+        if not channel_info:
+            post_message(channel_id, "Could not retrieve channel information.")
+            return
+        
+        created_timestamp = channel_info.get("created", 0)
+        if not created_timestamp:
+            post_message(channel_id, "Could not determine when this incident started.")
+            return
+        
+        # Calculate duration
+        now = datetime.datetime.now()
+        created_time = datetime.datetime.fromtimestamp(created_timestamp)
+        duration = now - created_time
+        
+        # Format duration
+        duration_text = format_duration(duration)
+        
+        # Post the time information
+        post_message(channel_id, f"⏰ **Incident Duration**\n\nThis incident has been open for: **{duration_text}**\nStarted: {created_time.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+        
+    except Exception as e:
+        print(f"Error calculating incident time: {e}")
+        post_message(channel_id, "Sorry, I encountered an error while calculating the incident duration.")
+
+def get_channel_history(channel_id, limit=100):
+    """Get recent channel history"""
+    try:
+        response = requests.get(
+            "https://slack.com/api/conversations.history",
+            headers=SLACK_HEADERS,
+            params={
+                "channel": channel_id,
+                "limit": limit
+            }
+        ).json()
+        
+        if not response.get("ok"):
+            print(f"Could not get channel history: {response.get('error')}")
+            return []
+        
+        return response.get("messages", [])
+        
+    except Exception as e:
+        print(f"Error getting channel history: {e}")
+        return []
+
+def get_channel_info(channel_id):
+    """Get channel information including creation time"""
+    try:
+        response = requests.get(
+            "https://slack.com/api/conversations.info",
+            headers=SLACK_HEADERS,
+            params={"channel": channel_id}
+        ).json()
+        
+        if not response.get("ok"):
+            print(f"Could not get channel info: {response.get('error')}")
+            return None
+        
+        return response.get("channel", {})
+        
+    except Exception as e:
+        print(f"Error getting channel info: {e}")
+        return None
+
+def generate_incident_summary(messages, channel_id):
+    """Generate a comprehensive summary of the incident using AI"""
+    try:
+        # Format messages for AI analysis
+        formatted_messages = []
+        for msg in messages:
+            user = msg.get("user", "Unknown")
+            text = msg.get("text", "")
+            timestamp = msg.get("ts", "")
+            
+            if timestamp:
+                time_str = datetime.datetime.fromtimestamp(float(timestamp)).strftime('%H:%M:%S')
+            else:
+                time_str = "Unknown"
+            
+            formatted_messages.append(f"[{time_str}] {user}: {text}")
+        
+        # Limit to last 50 messages to avoid token limits
+        recent_messages = formatted_messages[:50]
+        messages_text = "\n".join(recent_messages)
+        
+        # Generate summary using AI
+        prompt = f"""You are an incident response assistant. Analyze this Slack conversation from an incident channel and provide a comprehensive summary.
+
+Channel messages:
+{messages_text}
+
+Please provide a structured summary that includes:
+1. Key events and timeline
+2. People involved and their roles
+3. Current status and progress
+4. Important decisions or actions taken
+5. Next steps or pending items
+
+Keep it concise but comprehensive. Focus on the most important information for incident management."""
+
+        fallback_models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
+        models_to_try = [GEMINI_MODEL] + [m for m in fallback_models if m != GEMINI_MODEL]
+        
+        for model_name in models_to_try:
+            try:
+                print(f"Generating incident summary with model: {model_name}")
+                model = genai.GenerativeModel(model_name)
+                response = model.generate_content(prompt)
+                
+                if hasattr(response, 'text') and response.text:
+                    print(f"Successfully generated incident summary with model: {model_name}")
+                    return response.text.strip()
+                elif response.parts:
+                    summary_text = ''.join(part.text for part in response.parts if hasattr(part, 'text'))
+                    if summary_text:
+                        print(f"Successfully generated incident summary with model: {model_name}")
+                        return summary_text.strip()
+                
+            except Exception as e:
+                print(f"Error with model {model_name}: {e}")
+                continue
+        
+        return "Could not generate summary due to technical issues."
+        
+    except Exception as e:
+        print(f"Error generating incident summary: {e}")
+        return "Error generating summary."
+
+def format_duration(duration):
+    """Format a duration in a human-readable way"""
+    total_seconds = int(duration.total_seconds())
+    
+    if total_seconds < 60:
+        return f"{total_seconds} seconds"
+    elif total_seconds < 3600:
+        minutes = total_seconds // 60
+        return f"{minutes} minute{'s' if minutes != 1 else ''}"
+    elif total_seconds < 86400:
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
+        return f"{hours} hour{'s' if hours != 1 else ''} and {minutes} minute{'s' if minutes != 1 else ''}"
+    else:
+        days = total_seconds // 86400
+        hours = (total_seconds % 86400) // 3600
+        return f"{days} day{'s' if days != 1 else ''} and {hours} hour{'s' if hours != 1 else ''}"
+
+def post_firebot_help(channel_id):
+    """Post help information for firebot commands"""
+    help_text = """🤖 **FireBot Commands**
+
+Available commands:
+• `firebot summary` - Generate a comprehensive summary of the incident
+• `firebot time` - Show how long the incident has been open
+
+Just type one of these commands in the channel!"""
+    
+    post_message(channel_id, help_text)
+
+def post_message(channel_id, text):
+    """Post a message to a Slack channel"""
+    try:
+        response = requests.post(
+            "https://slack.com/api/chat.postMessage",
+            headers=SLACK_HEADERS,
+            json={
+                "channel": channel_id,
+                "text": text,
+                "unfurl_links": False,
+                "unfurl_media": False
+            }
+        ).json()
+        
+        if not response.get("ok"):
+            print(f"Error posting message: {response.get('error')}")
+            
+    except Exception as e:
+        print(f"Error posting message: {e}")
 
 # --- CORE LOGIC ---
 def process_fire_ticket(event_data, user_id):
