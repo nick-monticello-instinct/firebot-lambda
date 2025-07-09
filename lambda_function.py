@@ -45,7 +45,7 @@ JIRA_SUMMARY_FIELD = "customfield_10250"
 
 # DynamoDB configuration
 DYNAMODB_TABLE_NAME = os.environ.get("DYNAMODB_TABLE_NAME", "firebot-coordination")
-DYNAMODB_REGION = os.environ.get("AWS_REGION", "us-east-1")
+DYNAMODB_REGION = os.environ.get("AWS_REGION", "us-east-2")
 
 # Initialize DynamoDB client
 if DYNAMODB_AVAILABLE:
@@ -105,6 +105,15 @@ def acquire_incident_lock(issue_key, timeout_minutes=10):
         print("DynamoDB not available, using fallback coordination")
         return True
     
+    # Check if table exists
+    try:
+        coordination_table.table_status
+        print("DynamoDB table exists and is accessible")
+    except Exception as e:
+        print(f"DynamoDB table not accessible: {e}")
+        print("Falling back to existing coordination logic")
+        return True
+    
     try:
         # Calculate expiration time
         now = datetime.datetime.now()
@@ -133,6 +142,10 @@ def acquire_incident_lock(issue_key, timeout_minutes=10):
         if e.response['Error']['Code'] == 'ConditionalCheckFailedException':
             print(f"Failed to acquire DynamoDB lock for {issue_key} - another instance is processing")
             return False
+        elif e.response['Error']['Code'] == 'ResourceNotFoundException':
+            print(f"DynamoDB table not found: {e}")
+            print("Falling back to existing coordination logic")
+            return True  # Proceed with fallback
         else:
             print(f"DynamoDB error: {e}")
             return True  # Proceed if DynamoDB fails
