@@ -208,19 +208,22 @@ def process_fire_ticket(event_data, user_id):
     print(f"Found Jira issue: {issue_key}")
     
     try:
-        # Step 0: Immediate coordination check - post coordination message to claim ownership
-        coordination_success = attempt_immediate_coordination(issue_key)
-        if not coordination_success:
-            print(f"Another instance is already processing {issue_key}, aborting immediately")
+        # Step 0: Atomic lock via channel creation - first to create wins
+        date_str = datetime.datetime.now().strftime("%Y%m%d")
+        hospital_name = "unknown"  # We'll get this from Jira later
+        
+        # Create a temporary channel name for atomic lock
+        temp_channel_name = f"temp-lock-{issue_key.lower()}-{date_str}"
+        
+        # Try to create the temp channel - this is our atomic lock
+        lock_success = create_atomic_lock_channel(temp_channel_name, issue_key)
+        if not lock_success:
+            print(f"Failed to acquire atomic lock for {issue_key}, another instance is processing")
             return
         
-        # Step 1: Attempt to acquire processing lock by creating coordination message
-        coordination_success = attempt_incident_coordination(issue_key)
-        if not coordination_success:
-            print(f"Another instance is already processing {issue_key}, aborting")
-            return
+        print(f"Successfully acquired atomic lock for {issue_key}")
         
-        # Fetch Jira data first to validate the ticket exists
+        # Step 1: Fetch Jira data to get hospital name
         jira_data = fetch_jira_data(issue_key)
         if jira_data.status_code != 200:
             raise Exception(f"Failed to fetch Jira ticket data: {jira_data.text}")
@@ -235,11 +238,10 @@ def process_fire_ticket(event_data, user_id):
         hospital_name = extract_hospital_name(ticket)
         hospital_slug = format_hospital_for_channel(hospital_name)
         
-        date_str = datetime.datetime.now().strftime("%Y%m%d")
         channel_slug = issue_key.lower()
         base_channel_name = f"incident-{channel_slug}-{date_str}-{hospital_slug}"
         
-        # Step 1: Create or find incident channel (this acts as another coordination point)
+        # Step 2: Create the real incident channel
         channel_id, channel_name = create_incident_channel_with_coordination(base_channel_name, issue_key)
         if not channel_id:
             print(f"Failed to coordinate channel creation for {issue_key}, another instance may be processing")
@@ -247,10 +249,13 @@ def process_fire_ticket(event_data, user_id):
             
         print(f"Successfully coordinated channel: {channel_name} ({channel_id})")
 
-        # Step 2: Invite user to channel
+        # Step 3: Clean up the temp lock channel
+        cleanup_temp_lock_channel(temp_channel_name)
+        
+        # Step 4: Invite user to channel
         invite_user_to_channel(user_id, channel_id)
         
-        # Step 3: Post welcome message (only once per incident)
+        # Step 5: Post welcome message (only once per incident)
         welcome_cache_key = f"welcome_{issue_key}"
         if welcome_cache_key not in processed_events:
             processed_events.add(welcome_cache_key)
@@ -259,7 +264,7 @@ def process_fire_ticket(event_data, user_id):
         else:
             print(f"Welcome message for {issue_key} already posted, skipping")
         
-        # Step 4: Generate and post summary (only once per incident)
+        # Step 6: Generate and post summary (only once per incident)
         summary_cache_key = f"summary_{issue_key}"
         if summary_cache_key not in processed_events:
             processed_events.add(summary_cache_key)
@@ -270,11 +275,11 @@ def process_fire_ticket(event_data, user_id):
         else:
             print(f"Summary for {issue_key} already posted, skipping")
         
-        # Step 5: Fetch attachments once for both analysis and media processing
+        # Step 7: Fetch attachments once for both analysis and media processing
         print(f"Fetching attachments for analysis and media processing: {issue_key}")
         attachments = fetch_jira_attachments(issue_key)
         
-        # Step 6: Analyze ticket for missing information and reach out to creator (critical step)
+        # Step 8: Analyze ticket for missing information and reach out to creator (critical step)
         analysis_cache_key = f"analysis_{issue_key}"
         if analysis_cache_key not in processed_events:
             print(f"Starting analysis and outreach for {issue_key}")
@@ -287,7 +292,7 @@ def process_fire_ticket(event_data, user_id):
         else:
             print(f"Analysis for {issue_key} already completed, skipping")
         
-        # Step 7: Process media attachments from Jira ticket
+        # Step 9: Process media attachments from Jira ticket
         media_cache_key = f"media_{issue_key}"
         if media_cache_key not in processed_events:
             try:
@@ -495,12 +500,12 @@ def is_workflow_already_completed(channel_id, issue_key):
         return False
 
 def create_incident_channel_with_coordination(base_name, issue_key):
-    """Create incident channel with coordination to prevent duplicates"""
+    """Create incident channel with simplified coordination since we have atomic lock"""
     try:
         original_name = base_name.lower()
         
-        # First, try to create the exact channel name
-        print(f"Attempting to create coordinated channel: {original_name}")
+        # Since we have atomic lock, just create the channel
+        print(f"Creating incident channel: {original_name}")
         create_response = requests.post(
             "https://slack.com/api/conversations.create",
             headers=SLACK_HEADERS,
@@ -509,16 +514,13 @@ def create_incident_channel_with_coordination(base_name, issue_key):
         
         if create_response.get("ok"):
             channel_id = create_response["channel"]["id"]
-            print(f"Successfully created new channel: {original_name}")
-            
-            # Post a coordination message immediately to claim ownership
-            post_coordination_message(channel_id, issue_key)
+            print(f"Successfully created incident channel: {original_name}")
             return channel_id, original_name
             
         elif create_response.get("error") == "name_taken":
-            print(f"Channel {original_name} already exists, checking for coordination")
+            print(f"Channel {original_name} already exists, using existing channel")
             
-            # Channel exists, get its ID and check coordination
+            # Channel exists, get its ID
             response = requests.get(
                 "https://slack.com/api/conversations.list",
                 headers=SLACK_HEADERS,
@@ -530,13 +532,7 @@ def create_incident_channel_with_coordination(base_name, issue_key):
                 if original_name in existing_channels:
                     channel = existing_channels[original_name]
                     if not channel.get("is_archived"):
-                        # Check if we should proceed with this existing channel
-                        if is_workflow_already_completed(channel["id"], issue_key):
-                            print(f"Workflow already completed for {issue_key}, aborting duplicate processing")
-                            return None, None  # Abort processing
-                        else:
-                            post_coordination_message(channel["id"], issue_key)
-                            return channel["id"], original_name
+                        return channel["id"], original_name
             
             # Fall back to numbered channels if needed
             return create_incident_channel(base_name)
@@ -545,7 +541,7 @@ def create_incident_channel_with_coordination(base_name, issue_key):
             return create_incident_channel(base_name)
             
     except Exception as e:
-        print(f"Error in coordinated channel creation: {e}")
+        print(f"Error in channel creation: {e}")
         return create_incident_channel(base_name)
 
 def post_coordination_message(channel_id, issue_key):
@@ -1577,3 +1573,51 @@ def is_incident_workflow_completed(channel_id, issue_key):
     except Exception as e:
         print(f"Error checking workflow completion: {e}")
         return False
+
+def create_atomic_lock_channel(channel_name, issue_key):
+    """Creates a temporary channel to prevent duplicate incident processing."""
+    try:
+        print(f"Attempting to create atomic lock channel: {channel_name}")
+        create_response = requests.post(
+            "https://slack.com/api/conversations.create",
+            headers=SLACK_HEADERS,
+            json={"name": channel_name, "is_private": False}
+        ).json()
+
+        if create_response.get("ok"):
+            print(f"Successfully created atomic lock channel: {channel_name}")
+            return True
+        else:
+            print(f"Failed to create atomic lock channel {channel_name}: {create_response.get('error')}")
+            return False
+    except Exception as e:
+        print(f"Error creating atomic lock channel: {e}")
+        return False
+
+def cleanup_temp_lock_channel(channel_name):
+    """Deletes the temporary channel used for atomic lock."""
+    try:
+        print(f"Attempting to delete atomic lock channel: {channel_name}")
+        # Find the channel ID first
+        response = requests.get(
+            "https://slack.com/api/conversations.list",
+            headers=SLACK_HEADERS,
+            params={"name": channel_name, "exclude_archived": "false", "limit": 1}
+        ).json()
+
+        if response.get("ok") and response.get("channels") and response["channels"][0].get("id"):
+            channel_id = response["channels"][0]["id"]
+            delete_response = requests.post(
+                "https://slack.com/api/conversations.delete",
+                headers=SLACK_HEADERS,
+                json={"channel_id": channel_id}
+            ).json()
+
+            if delete_response.get("ok"):
+                print(f"Successfully deleted atomic lock channel: {channel_name}")
+            else:
+                print(f"Failed to delete atomic lock channel {channel_name}: {delete_response.get('error')}")
+        else:
+            print(f"Atomic lock channel {channel_name} not found or could not retrieve ID.")
+    except Exception as e:
+        print(f"Error cleaning up atomic lock channel: {e}")
