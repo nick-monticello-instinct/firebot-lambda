@@ -246,6 +246,15 @@ def process_firebot_command(event_data, user_id):
             print(f"Skipping message from bot user {user_id} to prevent duplicate processing")
             return
         
+        # Create a unique cache key for this firebot command to prevent duplicates
+        command_cache_key = f"firebot_{channel_id}_{text}"
+        if command_cache_key in processed_events:
+            print(f"Firebot command already processed: {text}")
+            return
+        
+        # Mark command as processed
+        processed_events.add(command_cache_key)
+        
         # Parse the command
         parts = text.split()
         if len(parts) < 2:
@@ -498,20 +507,10 @@ def process_fire_ticket(event_data, user_id):
     print(f"Found Jira issue: {issue_key}")
     
     try:
-        # Step 0: Atomic lock via channel creation - first to create wins
-        date_str = datetime.datetime.now().strftime("%Y%m%d")
-        hospital_name = "unknown"  # We'll get this from Jira later
-        
-        # Create a temporary channel name for atomic lock
-        temp_channel_name = f"temp-lock-{issue_key.lower()}-{date_str}"
-        
-        # Try to create the temp channel - this is our atomic lock
-        lock_success = create_atomic_lock_channel(temp_channel_name, issue_key)
-        if not lock_success:
-            print(f"Failed to acquire atomic lock for {issue_key}, another instance is processing")
+        # Step 0: Check if incident already processed by looking for existing channels
+        if check_incident_already_processed(issue_key):
+            print(f"Incident {issue_key} already processed, skipping")
             return
-        
-        print(f"Successfully acquired atomic lock for {issue_key}")
         
         # Step 1: Fetch Jira data to get hospital name
         jira_data = fetch_jira_data(issue_key)
@@ -528,22 +527,20 @@ def process_fire_ticket(event_data, user_id):
         hospital_name = extract_hospital_name(ticket)
         hospital_slug = format_hospital_for_channel(hospital_name)
         
+        date_str = datetime.datetime.now().strftime("%Y%m%d")
         channel_slug = issue_key.lower()
         base_channel_name = f"incident-{channel_slug}-{date_str}-{hospital_slug}"
         
-        # Step 2: Create the real incident channel
+        # Step 2: Create the incident channel with better coordination
         channel_id, channel_name = create_incident_channel_with_coordination(base_channel_name, issue_key)
         if not channel_id:
             print(f"Failed to coordinate channel creation for {issue_key}, another instance may be processing")
             return
             
         print(f"Successfully coordinated channel: {channel_name} ({channel_id})")
-
-        # Step 3: Clean up the temp lock channel (skip if we can't delete)
-        try:
-            cleanup_temp_lock_channel(temp_channel_name)
-        except Exception as e:
-            print(f"Could not cleanup temp lock channel (this is normal): {e}")
+        
+        # Step 3: Post coordination message to claim ownership
+        post_coordination_message(channel_id, issue_key)
         
         # Step 4: Invite user to channel
         invite_user_to_channel(user_id, channel_id)
