@@ -405,8 +405,16 @@ def process_firebot_command(event_data, user_id):
         # Create a unique lock key for this firebot command
         command_lock_key = f"firebot-{channel_id}-{hash(text)}"
         
+        print(f"Attempting to acquire DynamoDB lock for firebot command: {text}")
+        print(f"Lock key: {command_lock_key}")
+        
+        # Check if command is already being processed
+        if check_incident_processing_status(command_lock_key):
+            print(f"Firebot command {text} is already being processed")
+            return
+        
         # Try to acquire DynamoDB lock for this command
-        if not acquire_incident_lock(command_lock_key, timeout_minutes=2):
+        if not acquire_incident_lock(command_lock_key, timeout_minutes=1):
             print(f"Failed to acquire lock for firebot command: {text}")
             return
         
