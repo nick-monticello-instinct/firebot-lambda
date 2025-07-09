@@ -113,6 +113,8 @@ def lambda_handler(event, context=None):
                 add_to_cache(event_id)
                 
                 user_id = event_data.get("user")
+                
+                # Quick response to Slack to prevent webhook timeout/retry
                 try:
                     process_fire_ticket(body, user_id)
                 except Exception as err:
@@ -120,14 +122,17 @@ def lambda_handler(event, context=None):
                     # Remove from processed events if processing failed
                     processed_events.discard(event_id)
                     print(f"Removed failed event from cache: {event_id}")
-                    return {"statusCode": 500, "body": str(err)}
+                    # Still return 200 to prevent Slack retry
+                    return {"statusCode": 200, "body": "Processing failed but acknowledged"}
+                
                 return {"statusCode": 200, "body": "OK"}
 
         return {"statusCode": 400, "body": "Bad request"}
 
     except Exception as e:
         print("Unhandled exception in lambda_handler:", e)
-        return {"statusCode": 500, "body": str(e)}
+        # Return 200 even on exceptions to prevent Slack retries
+        return {"statusCode": 200, "body": "Error acknowledged"}
 
 def create_event_id(event_data):
     """Create a unique identifier for deduplication"""
@@ -314,13 +319,14 @@ def attempt_incident_coordination(issue_key):
             
         existing_channels = {c["name"]: c for c in response.get("channels", [])}
         
-        # If any active channel exists for this incident, check if processing is in progress
+        # If any active channel exists for this incident, check if processing already completed
         for channel_name, channel in existing_channels.items():
             if channel_name.startswith(incident_pattern) and not channel.get("is_archived"):
                 print(f"Found existing channel for {issue_key}: {channel_name}")
                 
-                # Check if this instance should proceed or abort
-                if should_abort_processing(channel["id"], issue_key):
+                # Check if processing is already completed by looking for bot workflow messages
+                if is_workflow_already_completed(channel["id"], issue_key):
+                    print(f"Workflow already completed for {issue_key}, aborting duplicate processing")
                     return False
                 else:
                     print(f"Proceeding with processing {issue_key} in existing channel")
@@ -333,12 +339,12 @@ def attempt_incident_coordination(issue_key):
         print(f"Error in incident coordination: {e}")
         return True  # Proceed if coordination fails
 
-def should_abort_processing(channel_id, issue_key):
-    """Check if another instance is already processing this incident"""
+def is_workflow_already_completed(channel_id, issue_key):
+    """Check if the workflow has been completed by looking for recent bot messages"""
     try:
-        # Look for recent activity that indicates processing is in progress
-        thirty_seconds_ago = datetime.datetime.now() - datetime.timedelta(seconds=30)
-        oldest_timestamp = thirty_seconds_ago.timestamp()
+        # Look for messages in the last 10 minutes
+        ten_minutes_ago = datetime.datetime.now() - datetime.timedelta(minutes=10)
+        oldest_timestamp = ten_minutes_ago.timestamp()
         
         response = requests.get(
             "https://slack.com/api/conversations.history",
@@ -346,49 +352,56 @@ def should_abort_processing(channel_id, issue_key):
             params={
                 "channel": channel_id,
                 "oldest": oldest_timestamp,
-                "limit": 20
+                "limit": 50
             }
         ).json()
         
         if not response.get("ok"):
-            print(f"Could not check channel history for coordination")
+            print(f"Warning: Could not check channel history: {response}")
             return False
         
         messages = response.get("messages", [])
         
-        # Look for evidence that processing is actively happening
-        processing_indicators = [
-            "*Incident Summary:*",
-            "Thanks for reporting incident",
-            "Uploaded 1 media file",
-            "A developer is on the way"
-        ]
+        # Look for evidence of completed workflow steps
+        found_summary = False
+        found_analysis = False
+        found_media = False
         
-        recent_processing = False
+        bot_user_id = os.environ.get("SLACK_BOT_USER_ID", "U09584DT15X")
+        
         for message in messages:
-            message_text = message.get("text", "")
-            timestamp = float(message.get("ts", 0))
+            # Only check messages from our bot
+            if message.get("user") != bot_user_id and message.get("bot_id") != "B09584DRW4R":
+                continue
+                
+            text = message.get("text", "")
             
-            # If we see processing activity in the last 30 seconds, abort
-            for indicator in processing_indicators:
-                if indicator in message_text and timestamp > oldest_timestamp:
-                    print(f"Found recent processing activity: '{indicator}' at {timestamp}")
-                    recent_processing = True
-                    break
+            # Check for workflow completion indicators
+            if "*Incident Summary:*" in text:
+                found_summary = True
+                print(f"Found summary message for {issue_key}")
             
-            if recent_processing:
-                break
+            if ("Thanks for reporting incident" in text or 
+                "additional details" in text or 
+                "A developer is" in text):
+                found_analysis = True
+                print(f"Found analysis message for {issue_key}")
+            
+            if ("Uploaded" in text and "media file" in text and issue_key in text):
+                found_media = True
+                print(f"Found media upload message for {issue_key}")
         
-        if recent_processing:
-            print(f"Aborting - another instance is actively processing {issue_key}")
-            return True
-        else:
-            print(f"No recent processing detected for {issue_key}, proceeding")
-            return False
-            
+        # Consider workflow completed if we have summary + analysis
+        # (media is optional depending on attachments)
+        workflow_completed = found_summary and found_analysis
+        
+        print(f"Workflow status for {issue_key}: summary={found_summary}, analysis={found_analysis}, media={found_media}, completed={workflow_completed}")
+        
+        return workflow_completed
+        
     except Exception as e:
-        print(f"Error checking for concurrent processing: {e}")
-        return False  # Proceed if we can't check
+        print(f"Error checking workflow completion: {e}")
+        return False
 
 def create_incident_channel_with_coordination(base_name, issue_key):
     """Create incident channel with coordination to prevent duplicates"""
@@ -427,7 +440,8 @@ def create_incident_channel_with_coordination(base_name, issue_key):
                     channel = existing_channels[original_name]
                     if not channel.get("is_archived"):
                         # Check if we should proceed with this existing channel
-                        if should_abort_processing(channel["id"], issue_key):
+                        if is_workflow_already_completed(channel["id"], issue_key):
+                            print(f"Workflow already completed for {issue_key}, aborting duplicate processing")
                             return None, None  # Abort processing
                         else:
                             post_coordination_message(channel["id"], issue_key)
