@@ -191,6 +191,12 @@ def process_fire_ticket(event_data, user_id):
     print(f"Found Jira issue: {issue_key}")
     
     try:
+        # Step 0: Attempt to acquire processing lock by creating coordination message
+        coordination_success = attempt_incident_coordination(issue_key)
+        if not coordination_success:
+            print(f"Another instance is already processing {issue_key}, aborting")
+            return
+        
         # Fetch Jira data first to validate the ticket exists
         jira_data = fetch_jira_data(issue_key)
         if jira_data.status_code != 200:
@@ -202,11 +208,6 @@ def process_fire_ticket(event_data, user_id):
         parsed_data = parse_jira_ticket(ticket)
         print(f"Parsed ticket data - Summary length: {len(parsed_data['summary'])}, Description length: {len(parsed_data['description'])}")
         
-        # Check if this incident has already been fully processed
-        if check_incident_already_processed(issue_key):
-            print(f"Incident {issue_key} has already been fully processed, skipping")
-            return
-        
         # Extract hospital name and format for channel name
         hospital_name = extract_hospital_name(ticket)
         hospital_slug = format_hospital_for_channel(hospital_name)
@@ -215,9 +216,13 @@ def process_fire_ticket(event_data, user_id):
         channel_slug = issue_key.lower()
         base_channel_name = f"incident-{channel_slug}-{date_str}-{hospital_slug}"
         
-        # Step 1: Create or find incident channel
-        channel_id, channel_name = create_incident_channel(base_channel_name)
-        print(f"Created/found channel: {channel_name} ({channel_id})")
+        # Step 1: Create or find incident channel (this acts as another coordination point)
+        channel_id, channel_name = create_incident_channel_with_coordination(base_channel_name, issue_key)
+        if not channel_id:
+            print(f"Failed to coordinate channel creation for {issue_key}, another instance may be processing")
+            return
+            
+        print(f"Successfully coordinated channel: {channel_name} ({channel_id})")
 
         # Step 2: Invite user to channel
         invite_user_to_channel(user_id, channel_id)
@@ -289,6 +294,178 @@ def process_fire_ticket(event_data, user_id):
     except Exception as e:
         print(f"Error processing fire ticket {issue_key}: {e}")
         raise
+
+def attempt_incident_coordination(issue_key):
+    """Attempt to coordinate incident processing across Lambda instances using Slack"""
+    try:
+        # Check if there's already an active incident channel for today
+        date_str = datetime.datetime.now().strftime("%Y%m%d")
+        incident_pattern = f"incident-{issue_key.lower()}-{date_str}-"
+        
+        response = requests.get(
+            "https://slack.com/api/conversations.list",
+            headers=SLACK_HEADERS,
+            params={"exclude_archived": "false", "limit": 1000}
+        ).json()
+
+        if not response.get("ok"):
+            print(f"Warning: Could not list channels for coordination: {response}")
+            return True  # Proceed if we can't check
+            
+        existing_channels = {c["name"]: c for c in response.get("channels", [])}
+        
+        # If any active channel exists for this incident, check if processing is in progress
+        for channel_name, channel in existing_channels.items():
+            if channel_name.startswith(incident_pattern) and not channel.get("is_archived"):
+                print(f"Found existing channel for {issue_key}: {channel_name}")
+                
+                # Check if this instance should proceed or abort
+                if should_abort_processing(channel["id"], issue_key):
+                    return False
+                else:
+                    print(f"Proceeding with processing {issue_key} in existing channel")
+                    return True
+        
+        print(f"No existing channels found for {issue_key}, proceeding with processing")
+        return True
+        
+    except Exception as e:
+        print(f"Error in incident coordination: {e}")
+        return True  # Proceed if coordination fails
+
+def should_abort_processing(channel_id, issue_key):
+    """Check if another instance is already processing this incident"""
+    try:
+        # Look for recent activity that indicates processing is in progress
+        thirty_seconds_ago = datetime.datetime.now() - datetime.timedelta(seconds=30)
+        oldest_timestamp = thirty_seconds_ago.timestamp()
+        
+        response = requests.get(
+            "https://slack.com/api/conversations.history",
+            headers=SLACK_HEADERS,
+            params={
+                "channel": channel_id,
+                "oldest": oldest_timestamp,
+                "limit": 20
+            }
+        ).json()
+        
+        if not response.get("ok"):
+            print(f"Could not check channel history for coordination")
+            return False
+        
+        messages = response.get("messages", [])
+        
+        # Look for evidence that processing is actively happening
+        processing_indicators = [
+            "*Incident Summary:*",
+            "Thanks for reporting incident",
+            "Uploaded 1 media file",
+            "A developer is on the way"
+        ]
+        
+        recent_processing = False
+        for message in messages:
+            message_text = message.get("text", "")
+            timestamp = float(message.get("ts", 0))
+            
+            # If we see processing activity in the last 30 seconds, abort
+            for indicator in processing_indicators:
+                if indicator in message_text and timestamp > oldest_timestamp:
+                    print(f"Found recent processing activity: '{indicator}' at {timestamp}")
+                    recent_processing = True
+                    break
+            
+            if recent_processing:
+                break
+        
+        if recent_processing:
+            print(f"Aborting - another instance is actively processing {issue_key}")
+            return True
+        else:
+            print(f"No recent processing detected for {issue_key}, proceeding")
+            return False
+            
+    except Exception as e:
+        print(f"Error checking for concurrent processing: {e}")
+        return False  # Proceed if we can't check
+
+def create_incident_channel_with_coordination(base_name, issue_key):
+    """Create incident channel with coordination to prevent duplicates"""
+    try:
+        original_name = base_name.lower()
+        
+        # First, try to create the exact channel name
+        print(f"Attempting to create coordinated channel: {original_name}")
+        create_response = requests.post(
+            "https://slack.com/api/conversations.create",
+            headers=SLACK_HEADERS,
+            json={"name": original_name, "is_private": False}
+        ).json()
+        
+        if create_response.get("ok"):
+            channel_id = create_response["channel"]["id"]
+            print(f"Successfully created new channel: {original_name}")
+            
+            # Post a coordination message immediately to claim ownership
+            post_coordination_message(channel_id, issue_key)
+            return channel_id, original_name
+            
+        elif create_response.get("error") == "name_taken":
+            print(f"Channel {original_name} already exists, checking for coordination")
+            
+            # Channel exists, get its ID and check coordination
+            response = requests.get(
+                "https://slack.com/api/conversations.list",
+                headers=SLACK_HEADERS,
+                params={"exclude_archived": "false", "limit": 1000}
+            ).json()
+            
+            if response.get("ok"):
+                existing_channels = {c["name"]: c for c in response.get("channels", [])}
+                if original_name in existing_channels:
+                    channel = existing_channels[original_name]
+                    if not channel.get("is_archived"):
+                        # Check if we should proceed with this existing channel
+                        if should_abort_processing(channel["id"], issue_key):
+                            return None, None  # Abort processing
+                        else:
+                            post_coordination_message(channel["id"], issue_key)
+                            return channel["id"], original_name
+            
+            # Fall back to numbered channels if needed
+            return create_incident_channel(base_name)
+        else:
+            print(f"Error creating channel: {create_response.get('error')}")
+            return create_incident_channel(base_name)
+            
+    except Exception as e:
+        print(f"Error in coordinated channel creation: {e}")
+        return create_incident_channel(base_name)
+
+def post_coordination_message(channel_id, issue_key):
+    """Post a coordination message to claim processing ownership"""
+    try:
+        coordination_text = f"🔄 Processing incident {issue_key}..."
+        
+        response = requests.post(
+            "https://slack.com/api/chat.postMessage",
+            headers=SLACK_HEADERS,
+            json={
+                "channel": channel_id,
+                "text": coordination_text,
+                "unfurl_links": False,
+                "unfurl_media": False
+            }
+        ).json()
+        
+        if response.get("ok"):
+            print(f"Posted coordination message for {issue_key}")
+        else:
+            print(f"Warning: Could not post coordination message: {response.get('error')}")
+            
+    except Exception as e:
+        print(f"Error posting coordination message: {e}")
 
 def analyze_and_reach_out_to_creator(ticket, channel_id, issue_key, attachments):
     """Analyze ticket for missing info and reach out to creator"""
@@ -652,15 +829,37 @@ def find_slack_user_by_email(email):
 def generate_combined_incident_message(creator_info, checklist_results, issue_key, slack_user_id, parsed_data):
     """Generate a combined incident analysis and creator outreach message using structured checklist"""
     try:
-        creator_name = creator_info.get("display_name", "").split()[0] if creator_info.get("display_name") else "there"
+        # Safely extract creator name
+        creator_name = "there"
+        if creator_info and creator_info.get("display_name"):
+            try:
+                creator_name = creator_info.get("display_name", "").split()[0]
+            except (AttributeError, IndexError):
+                creator_name = "there"
+        
         user_mention = f"<@{slack_user_id}>" if slack_user_id else creator_name
         
-        # Get a short summary of the incident
-        incident_summary = parsed_data.get('summary', '')[:200] + ('...' if len(parsed_data.get('summary', '')) > 200 else '')
+        # Safely get incident summary
+        incident_summary = ""
+        if parsed_data and parsed_data.get('summary'):
+            try:
+                summary_text = str(parsed_data.get('summary', ''))
+                incident_summary = summary_text[:200] + ('...' if len(summary_text) > 200 else '')
+            except (TypeError, AttributeError):
+                incident_summary = "Issue details available in ticket"
         
-        # Check if we have missing items
-        missing_items = checklist_results.get('missing_items', [])
-        found_items = checklist_results.get('found_items', [])
+        # Safely extract checklist results
+        missing_items = []
+        found_items = []
+        if checklist_results and isinstance(checklist_results, dict):
+            missing_items = checklist_results.get('missing_items', []) or []
+            found_items = checklist_results.get('found_items', []) or []
+        
+        # Ensure they are lists
+        if not isinstance(missing_items, list):
+            missing_items = []
+        if not isinstance(found_items, list):
+            found_items = []
         
         if not missing_items:
             # All investigation items are present
@@ -669,13 +868,29 @@ def generate_combined_incident_message(creator_info, checklist_results, issue_ke
         # Generate specific requests for missing items
         missing_items_request = generate_missing_items_requests(missing_items, issue_key, parsed_data)
         
+        # Safely build found items summary
+        found_items_summary = ""
+        try:
+            if found_items:
+                found_items_names = []
+                for item in found_items[:3]:  # Only first 3 items
+                    if isinstance(item, dict) and 'item' in item:
+                        found_items_names.append(str(item['item']))
+                
+                if found_items_names:
+                    found_items_summary = ', '.join(found_items_names)
+                    if len(found_items) > 3:
+                        found_items_summary += '...'
+        except (TypeError, AttributeError, KeyError):
+            found_items_summary = "Several items"
+        
         prompt = f"""You are a helpful incident response bot for a veterinary software company. Create a supportive message that combines incident acknowledgment with specific investigation requests.
 
 INCIDENT: {issue_key}
 SUMMARY: {incident_summary}
 CREATOR: {creator_name}
 
-FOUND ITEMS ({len(found_items)}): {', '.join([item['item'] for item in found_items[:3]])}{'...' if len(found_items) > 3 else ''}
+FOUND ITEMS ({len(found_items)}): {found_items_summary}
 
 MISSING ITEMS REQUEST:
 {missing_items_request}
@@ -721,7 +936,9 @@ Don't include the person's name at the beginning since it will be mentioned sepa
         
     except Exception as e:
         print(f"Error generating combined incident message: {e}")
-        return f"Thanks for reporting incident {issue_key}! You did great work getting this submitted. A developer is on the way to help. Please share any additional details that might help us resolve this faster."
+        # Ultimate fallback with safe user mention
+        safe_mention = f"<@{slack_user_id}>" if slack_user_id else ""
+        return f"{safe_mention} Thanks for reporting incident {issue_key}! You did great work getting this submitted. A developer is on the way to help. Please share any additional details that might help us resolve this faster."
 
 def post_creator_outreach_message(channel_id, message, slack_user_id):
     """Post the outreach message to the incident channel"""
