@@ -48,6 +48,12 @@ FireBot analyzes each ticket against 7 critical investigation items:
 - **Smart Detection**: Only responds to commands in incident channels
 - **AI-Powered Analysis**: Uses Gemini to analyze channel history and provide insights
 
+### 🔗 **JSM ChatOps Integration**
+- **Automatic Bot Invitation**: Automatically invites JSM ChatOps bot to incident channels
+- **On-Call Schedule Display**: Automatically shows current on-call schedules at the end of incident setup
+- **Manual On-Call Command**: `firebot oncall` command to trigger on-call schedule display
+- **Seamless Workflow**: Integrates with existing FireBot functionality without disrupting the user experience
+
 ## 🚀 Getting Started
 
 ### Prerequisites
@@ -73,7 +79,10 @@ JIRA_SUMMARY_FIELD=customfield_10250   # Summary field ID
 # AI Configuration
 GEMINI_API_KEY=your-gemini-api-key
 GEMINI_MODEL=gemini-1.5-flash  # Optional: defaults to gemini-1.5-flash
-```
+
+# JSM ChatOps Configuration
+JSM_CHATOPS_BOT_USER_ID=U1234567890  # JSM ChatOps bot user ID
+JSM_CHATOPS_ENABLED=true  # Set to false to disable JSM integration
 
 ### Required Slack Permissions
 
@@ -189,6 +198,7 @@ Pillow>=9.0.0
 4. **Media Processing**: Downloads and uploads any screenshots/videos from the ticket
 
 5. **Creator Outreach**: Invites ticket creator and provides specific guidance on missing information
+6. **On-Call Display**: Automatically shows current on-call schedules
 
 ### Interactive Commands
 
@@ -197,6 +207,7 @@ Once in an incident channel, users can interact with FireBot:
 ```
 firebot summary  # Generate comprehensive incident summary
 firebot time     # Show incident duration
+firebot oncall   # Show current on-call schedules
 ```
 
 ### Sample Output
@@ -254,6 +265,11 @@ This incident has been open for: **2 hours and 45 minutes**
 Started: 2025-01-09 14:30:00 UTC
 ```
 
+**On-Call Command:**
+```
+/jsmops all schedules
+```
+
 ## 🔧 Configuration
 
 ### Custom Field Mapping
@@ -283,6 +299,23 @@ The bot analyzes tickets against these items (configurable in code):
 - **Validation**: Images are validated using PIL/Pillow
 - **Upload method**: Modern Slack API (files.getUploadURLExternal + files.completeUploadExternal)
 
+### JSM ChatOps Setup
+
+To enable JSM ChatOps integration:
+
+1. **Install JSM ChatOps App**: Add the Jira Service Management ChatOps app to your Slack workspace
+2. **Get Bot User ID**: Find the JSM ChatOps bot user ID in your Slack workspace
+   - Go to the JSM ChatOps bot's profile in Slack
+   - Copy the user ID (starts with "U")
+3. **Configure Environment Variables**:
+   ```bash
+   JSM_CHATOPS_BOT_USER_ID=U1234567890  # Replace with actual bot user ID
+   JSM_CHATOPS_ENABLED=true
+   ```
+4. **Test Integration**: The bot will automatically invite JSM ChatOps to incident channels
+
+**Note**: The JSM ChatOps bot must have proper permissions to join channels in your Slack workspace.
+
 ## 🐛 Troubleshooting
 
 ### Common Issues
@@ -306,6 +339,12 @@ The bot analyzes tickets against these items (configurable in code):
 - Check `GEMINI_API_KEY` is valid
 - Review quota limits in Google Cloud Console
 - Bot falls back to simpler messages if AI fails
+
+**5. JSM ChatOps Integration Issues**
+- Verify `JSM_CHATOPS_BOT_USER_ID` is set correctly
+- Check `JSM_CHATOPS_ENABLED` is set to "true"
+- Ensure the JSM bot has proper permissions in your Slack workspace
+- Review logs for invitation errors
 
 ### Debugging
 

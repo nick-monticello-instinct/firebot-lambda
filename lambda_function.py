@@ -43,6 +43,10 @@ if GEMINI_MODEL in MODEL_MAPPING:
 JIRA_HOSPITAL_FIELD = os.environ.get("JIRA_HOSPITAL_FIELD", "customfield_10297")
 JIRA_SUMMARY_FIELD = "customfield_10250"
 
+# JSM ChatOps Bot Configuration
+JSM_CHATOPS_BOT_USER_ID = os.environ.get("JSM_CHATOPS_BOT_USER_ID", "")
+JSM_CHATOPS_ENABLED = os.environ.get("JSM_CHATOPS_ENABLED", "true").lower() == "true"
+
 # DynamoDB configuration
 DYNAMODB_TABLE_NAME = os.environ.get("DYNAMODB_TABLE_NAME", "firebot-coordination")
 DYNAMODB_REGION = os.environ.get("AWS_REGION", "us-east-2")
@@ -521,6 +525,10 @@ def process_firebot_command(event_data, user_id):
             response = handle_firebot_time(channel_id, user_id)
             if response:
                 track_command_response(channel_id, user_id, text, response)
+        elif command == "oncall":
+            response = handle_firebot_oncall(channel_id, user_id)
+            if response:
+                track_command_response(channel_id, user_id, text, response)
         else:
             print(f"Unknown firebot command: {command}")
             response = post_firebot_help(channel_id)
@@ -718,6 +726,36 @@ def format_duration(duration):
         hours = (total_seconds % 86400) // 3600
         return f"{days} day{'s' if days != 1 else ''} and {hours} hour{'s' if hours != 1 else ''}"
 
+def handle_firebot_oncall(channel_id, user_id):
+    """Trigger JSM ChatOps to show on-call schedules"""
+    try:
+        print(f"Triggering on-call schedule display for channel {channel_id}")
+        
+        # Post the JSM ChatOps command to trigger on-call schedules
+        oncall_message = "/jsmops all schedules"
+        
+        response = requests.post(
+            "https://slack.com/api/chat.postMessage",
+            headers=SLACK_HEADERS,
+            json={
+                "channel": channel_id,
+                "text": oncall_message,
+                "unfurl_links": False,
+                "unfurl_media": False
+            }
+        ).json()
+        
+        if response.get("ok"):
+            print(f"Successfully triggered on-call schedule display for channel {channel_id}")
+            return response.get("ts")
+        else:
+            print(f"Error triggering on-call schedule: {response.get('error')}")
+            return None
+            
+    except Exception as e:
+        print(f"Error handling firebot oncall command: {e}")
+        return None
+
 def post_firebot_help(channel_id):
     """Post help information for firebot commands"""
     help_text = """🤖 **FireBot Commands**
@@ -725,6 +763,7 @@ def post_firebot_help(channel_id):
 Available commands:
 • `firebot summary` - Generate a comprehensive summary of the incident
 • `firebot time` - Show how long the incident has been open
+• `firebot oncall` - Show current on-call schedules
 
 Just type one of these commands in the channel!"""
     
@@ -831,6 +870,9 @@ def process_fire_ticket(event_data, user_id):
         # Step 4: Invite user to channel
         invite_user_to_channel(user_id, channel_id)
         
+        # Step 4.5: Invite JSM ChatOps bot to channel
+        invite_jsm_chatops_bot(channel_id, issue_key)
+        
         # Step 5: Post greeting message to incident channel (only once per incident)
         greeting_cache_key = f"greeting_{issue_key}"
         if greeting_cache_key not in processed_events:
@@ -901,6 +943,20 @@ def process_fire_ticket(event_data, user_id):
                 processed_events.discard(media_cache_key)  # Allow retry on next run
         else:
             print(f"Media for {issue_key} already processed, skipping")
+        
+        # Step 11: Show on-call schedules (only once per incident)
+        oncall_cache_key = f"oncall_{issue_key}"
+        if oncall_cache_key not in processed_events:
+            try:
+                processed_events.add(oncall_cache_key)
+                handle_firebot_oncall(channel_id, user_id)
+                print(f"Triggered on-call schedule display for {issue_key}")
+            except Exception as e:
+                print(f"Error showing on-call schedules for {issue_key}: {e}")
+                # Don't fail the entire process if on-call display fails
+                processed_events.discard(oncall_cache_key)  # Allow retry on next run
+        else:
+            print(f"On-call display for {issue_key} already triggered, skipping")
         
         print(f"Successfully processed fire ticket for {issue_key}")
         
@@ -2056,6 +2112,33 @@ def invite_user_to_channel(user_id, channel_id):
     if not response.get("ok"):
         print(f"Warning: Could not invite user {user_id} to {channel_id}: {response.get('error')}")
 
+def invite_jsm_chatops_bot(channel_id, issue_key):
+    """Invite the JSM ChatOps bot to the incident channel"""
+    if not JSM_CHATOPS_ENABLED:
+        print("JSM ChatOps integration is disabled")
+        return
+    
+    if not JSM_CHATOPS_BOT_USER_ID:
+        print("JSM ChatOps bot user ID not configured, skipping invitation")
+        return
+    
+    try:
+        print(f"Inviting JSM ChatOps bot to incident channel for {issue_key}")
+        response = requests.post(
+            "https://slack.com/api/conversations.invite",
+            headers=SLACK_HEADERS,
+            json={"channel": channel_id, "users": JSM_CHATOPS_BOT_USER_ID}
+        ).json()
+        
+        if response.get("ok"):
+            print(f"Successfully invited JSM ChatOps bot to channel for {issue_key}")
+        else:
+            error = response.get("error", "unknown error")
+            print(f"Warning: Could not invite JSM ChatOps bot to {channel_id}: {error}")
+            
+    except Exception as e:
+        print(f"Error inviting JSM ChatOps bot: {e}")
+
 def post_welcome_message(source_channel, new_channel_name, new_channel_id):
     response = requests.post(
         "https://slack.com/api/chat.postMessage",
@@ -2366,6 +2449,7 @@ I'm FireBot, your AI-powered incident management assistant. Here's what I can he
 🤖 **AI Commands Available:**
 • `firebot summary` - Generate a comprehensive AI summary of the incident
 • `firebot time` - Show how long the incident has been open
+• `firebot oncall` - Show current on-call schedules
 
 💡 **What I've already done:**
 • Analyzed the Jira ticket for missing investigation details
@@ -2386,3 +2470,24 @@ Just type one of the commands above to get started! I'm here to help make incide
     ).json()
     if not response.get("ok"):
         print(f"Error posting incident channel greeting: {response.get('error')}")
+
+# --- TESTING FUNCTIONS ---
+def test_jsm_chatops_integration():
+    """Test function to verify JSM ChatOps integration configuration"""
+    print("=== JSM ChatOps Integration Test ===")
+    print(f"JSM ChatOps Enabled: {JSM_CHATOPS_ENABLED}")
+    print(f"JSM ChatOps Bot User ID: {JSM_CHATOPS_BOT_USER_ID}")
+    
+    if JSM_CHATOPS_ENABLED and JSM_CHATOPS_BOT_USER_ID:
+        print("✅ JSM ChatOps integration is properly configured")
+        return True
+    elif not JSM_CHATOPS_ENABLED:
+        print("⚠️ JSM ChatOps integration is disabled")
+        return False
+    else:
+        print("❌ JSM ChatOps bot user ID is not configured")
+        return False
+
+# Uncomment the following line to test JSM ChatOps configuration
+# if __name__ == "__main__":
+#     test_jsm_chatops_integration()
