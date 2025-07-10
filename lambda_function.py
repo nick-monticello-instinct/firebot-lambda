@@ -1166,38 +1166,56 @@ def post_coordination_message(channel_id, issue_key):
 
 def analyze_and_reach_out_to_creator(ticket, channel_id, issue_key, attachments):
     """Analyze ticket for missing info and reach out to creator"""
-    print(f"Analyzing ticket {issue_key} for missing information...")
+    print(f"Starting analysis and outreach for {issue_key}")
     
     try:
+        print("Step 1: Extracting creator information...")
         # Extract creator information from Jira
         creator_info = extract_creator_info(ticket)
         if not creator_info:
             print("Could not extract creator information from ticket")
             return
+        print(f"Creator info extracted: {creator_info}")
         
+        print("Step 2: Parsing ticket data...")
         # Analyze ticket for missing information using structured checklist
         parsed_data = parse_jira_ticket(ticket)
+        print(f"Parsed data - Summary: {parsed_data.get('summary', 'None')}, Description length: {len(parsed_data.get('description', ''))}")
         
+        print("Step 3: Running checklist analysis...")
         # Run the structured checklist analysis (attachments already fetched)
         checklist_results = analyze_incident_checklist(parsed_data, ticket, attachments)
+        print(f"Checklist analysis complete - Missing items: {len(checklist_results.get('missing_items', []))}, Found items: {len(checklist_results.get('found_items', []))}")
         
+        print("Step 4: Finding creator in Slack...")
         # Find creator in Slack
         slack_user_id = find_slack_user_by_email(creator_info.get('email'))
+        print(f"Slack user lookup result: {slack_user_id}")
         
+        print("Step 5: Inviting creator to channel...")
         # Invite creator to the incident channel if found in Slack
         if slack_user_id:
             print(f"Inviting ticket creator {slack_user_id} to incident channel")
             invite_user_to_channel(slack_user_id, channel_id)
         
+        print("Step 6: Generating combined message...")
         # Generate and send combined analysis + outreach message
-        combined_message = generate_combined_incident_message(
-            creator_info, 
-            checklist_results, 
-            issue_key,
-            slack_user_id,
-            parsed_data
-        )
+        try:
+            combined_message = generate_combined_incident_message(
+                creator_info, 
+                checklist_results, 
+                issue_key,
+                slack_user_id,
+                parsed_data
+            )
+            print("Successfully generated combined message")
+        except Exception as e:
+            print(f"Error generating combined message: {e}")
+            # Fallback message if generation fails
+            safe_mention = f"<@{slack_user_id}>" if slack_user_id else ""
+            combined_message = f"{safe_mention} Thanks for reporting incident {issue_key}! A developer is reviewing your ticket. Please share any additional details that might help us resolve this faster."
         
+        print("Step 7: Posting outreach message...")
         post_creator_outreach_message(channel_id, combined_message, slack_user_id)
         
         # Mark analysis as completed in the main cache
@@ -1206,6 +1224,9 @@ def analyze_and_reach_out_to_creator(ticket, channel_id, issue_key, attachments)
         
     except Exception as e:
         print(f"Error in analyze_and_reach_out_to_creator: {e}")
+        print(f"Error type: {type(e).__name__}")
+        import traceback
+        print(f"Traceback: {traceback.format_exc()}")
         raise
 
 def extract_creator_info(ticket):
@@ -1533,44 +1554,71 @@ def find_slack_user_by_email(email):
 def generate_combined_incident_message(creator_info, checklist_results, issue_key, slack_user_id, parsed_data):
     """Generate a combined incident analysis and creator outreach message using structured checklist"""
     try:
+        print(f"Starting message generation for {issue_key}")
+        
         # Safely extract creator name
         creator_name = "there"
-        if creator_info and creator_info.get("display_name"):
+        if creator_info and isinstance(creator_info, dict):
             try:
-                creator_name = creator_info.get("display_name", "").split()[0]
-            except (AttributeError, IndexError):
+                display_name = creator_info.get("display_name", "")
+                if display_name and isinstance(display_name, str):
+                    creator_name = display_name.split()[0]
+            except (AttributeError, IndexError) as e:
+                print(f"Error extracting creator name: {e}")
                 creator_name = "there"
         
         user_mention = f"<@{slack_user_id}>" if slack_user_id else creator_name
+        print(f"User mention prepared: {user_mention}")
         
         # Safely get incident summary
         incident_summary = ""
-        if parsed_data and parsed_data.get('summary'):
-            try:
+        try:
+            if isinstance(parsed_data, dict):
                 summary_text = str(parsed_data.get('summary', ''))
-                incident_summary = summary_text[:200] + ('...' if len(summary_text) > 200 else '')
-            except (TypeError, AttributeError):
-                incident_summary = "Issue details available in ticket"
+                if summary_text:
+                    incident_summary = summary_text[:200] + ('...' if len(summary_text) > 200 else '')
+            print(f"Incident summary prepared: {incident_summary}")
+        except (TypeError, AttributeError) as e:
+            print(f"Error preparing incident summary: {e}")
+            incident_summary = "Issue details available in ticket"
         
         # Safely extract checklist results
         missing_items = []
         found_items = []
-        if checklist_results and isinstance(checklist_results, dict):
-            missing_items = checklist_results.get('missing_items', []) or []
-            found_items = checklist_results.get('found_items', []) or []
-        
-        # Ensure they are lists
-        if not isinstance(missing_items, list):
+        try:
+            if isinstance(checklist_results, dict):
+                missing_items = checklist_results.get('missing_items', []) or []
+                found_items = checklist_results.get('found_items', []) or []
+                
+                # Ensure they are lists
+                if not isinstance(missing_items, list):
+                    print("Missing items is not a list, resetting to empty")
+                    missing_items = []
+                if not isinstance(found_items, list):
+                    print("Found items is not a list, resetting to empty")
+                    found_items = []
+            
+            print(f"Checklist results prepared - Missing: {len(missing_items)}, Found: {len(found_items)}")
+        except Exception as e:
+            print(f"Error preparing checklist results: {e}")
             missing_items = []
-        if not isinstance(found_items, list):
             found_items = []
         
         if not missing_items:
             # All investigation items are present
-            return f"{user_mention} **Incident Summary:** {incident_summary}\n\nThanks for reporting incident {issue_key}! 🎉 You did fantastic work providing all the key investigation details we need. A developer is on the way to help resolve this. The comprehensive information you provided will help us investigate this efficiently!"
+            message = f"{user_mention} **Incident Summary:** {incident_summary}\n\nThanks for reporting incident {issue_key}! 🎉 You did fantastic work providing all the key investigation details we need. A developer is on the way to help resolve this. The comprehensive information you provided will help us investigate this efficiently!"
+            print("Generated complete information message")
+            return message
         
         # Generate specific requests for missing items
-        missing_items_request = generate_missing_items_requests(missing_items, issue_key, parsed_data)
+        try:
+            missing_items_request = generate_missing_items_requests(missing_items, issue_key, parsed_data)
+            print("Generated missing items request")
+        except Exception as e:
+            print(f"Error generating missing items request: {e}")
+            # Use simple fallback message
+            items_list = "\n".join([f"• {item.get('item', 'Unknown item')}" for item in missing_items if isinstance(item, dict)])
+            missing_items_request = f"To help us investigate, could you please provide:\n\n{items_list}"
         
         # Safely build found items summary
         found_items_summary = ""
@@ -1585,10 +1633,14 @@ def generate_combined_incident_message(creator_info, checklist_results, issue_ke
                     found_items_summary = ', '.join(found_items_names)
                     if len(found_items) > 3:
                         found_items_summary += '...'
-        except (TypeError, AttributeError, KeyError):
+            print(f"Found items summary prepared: {found_items_summary}")
+        except Exception as e:
+            print(f"Error building found items summary: {e}")
             found_items_summary = "Several items"
         
-        prompt = f"""You are a helpful incident response bot for a veterinary software company. Create a supportive message that combines incident acknowledgment with specific investigation requests.
+        # Generate the final message using AI
+        try:
+            prompt = f"""You are a helpful incident response bot for a veterinary software company. Create a supportive message that combines incident acknowledgment with specific investigation requests.
 
 INCIDENT: {issue_key}
 SUMMARY: {incident_summary}
@@ -1609,37 +1661,46 @@ Create a message that:
 
 Don't include the person's name at the beginning since it will be mentioned separately. Use friendly but professional language."""
 
-        fallback_models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
-        models_to_try = [GEMINI_MODEL] + [m for m in fallback_models if m != GEMINI_MODEL]
-        
-        for model_name in models_to_try:
-            try:
-                print(f"Generating combined incident message with model: {model_name}")
-                model = genai.GenerativeModel(model_name)
-                response = model.generate_content(prompt)
-                
-                if hasattr(response, 'text') and response.text:
-                    message = response.text.strip()
-                    final_message = f"{user_mention} {message}"
-                    print(f"Successfully generated combined incident message with model: {model_name}")
-                    return final_message
-                elif response.parts:
-                    message_text = ''.join(part.text for part in response.parts if hasattr(part, 'text'))
-                    if message_text:
-                        final_message = f"{user_mention} {message_text.strip()}"
-                        print(f"Successfully generated combined incident message with model: {model_name}")
+            print("Attempting AI message generation")
+            fallback_models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
+            models_to_try = [GEMINI_MODEL] + [m for m in fallback_models if m != GEMINI_MODEL]
+            
+            for model_name in models_to_try:
+                try:
+                    print(f"Trying model: {model_name}")
+                    model = genai.GenerativeModel(model_name)
+                    response = model.generate_content(prompt)
+                    
+                    if hasattr(response, 'text') and response.text:
+                        message = response.text.strip()
+                        final_message = f"{user_mention} {message}"
+                        print(f"Successfully generated message with model: {model_name}")
                         return final_message
-                
-            except Exception as e:
-                print(f"Error with model {model_name}: {e}")
-                continue
-        
-        # Fallback message if AI fails
-        fallback_message = f"**Incident Summary:** {incident_summary}\n\nThanks for reporting incident {issue_key}! A developer is on the way to help.\n\n{missing_items_request}"
-        return f"{user_mention} {fallback_message}"
+                    elif response.parts:
+                        message_text = ''.join(part.text for part in response.parts if hasattr(part, 'text'))
+                        if message_text:
+                            final_message = f"{user_mention} {message_text.strip()}"
+                            print(f"Successfully generated message with model: {model_name}")
+                            return final_message
+                    
+                except Exception as e:
+                    print(f"Error with model {model_name}: {e}")
+                    continue
+            
+            # If all models fail, use fallback message
+            raise Exception("All AI models failed to generate message")
+            
+        except Exception as e:
+            print(f"Error in AI message generation: {e}")
+            # Use a simple fallback message that includes the missing items request
+            fallback_message = f"**Incident Summary:** {incident_summary}\n\nThanks for reporting incident {issue_key}! A developer is on the way to help.\n\n{missing_items_request}"
+            return f"{user_mention} {fallback_message}"
         
     except Exception as e:
-        print(f"Error generating combined incident message: {e}")
+        print(f"Error in generate_combined_incident_message: {e}")
+        print(f"Error type: {type(e).__name__}")
+        import traceback
+        print(f"Traceback: {traceback.format_exc()}")
         # Ultimate fallback with safe user mention
         safe_mention = f"<@{slack_user_id}>" if slack_user_id else ""
         return f"{safe_mention} Thanks for reporting incident {issue_key}! You did great work getting this submitted. A developer is on the way to help. Please share any additional details that might help us resolve this faster."
