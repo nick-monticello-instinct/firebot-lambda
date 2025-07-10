@@ -731,6 +731,34 @@ def handle_firebot_oncall(channel_id, user_id):
     try:
         print(f"Triggering on-call schedule display for channel {channel_id}")
         
+        # First check if JSM ChatOps bot is in the channel
+        try:
+            members_response = requests.get(
+                "https://slack.com/api/conversations.members",
+                headers=SLACK_HEADERS,
+                params={"channel": channel_id},
+                timeout=5
+            ).json()
+            
+            if members_response.get("ok"):
+                members = members_response.get("members", [])
+                if JSM_CHATOPS_BOT_USER_ID not in members:
+                    print(f"JSM ChatOps bot not in channel {channel_id}, posting fallback message")
+                    fallback_message = "📞 **On-Call Information**\n\nTo view current on-call schedules, please ensure the JSM ChatOps bot is available in this channel."
+                    response = requests.post(
+                        "https://slack.com/api/chat.postMessage",
+                        headers=SLACK_HEADERS,
+                        json={
+                            "channel": channel_id,
+                            "text": fallback_message,
+                            "unfurl_links": False,
+                            "unfurl_media": False
+                        }
+                    ).json()
+                    return response.get("ts") if response.get("ok") else None
+        except Exception as e:
+            print(f"Error checking channel members: {e}")
+        
         # Post the JSM ChatOps command to trigger on-call schedules
         oncall_message = "/jsmops all schedules"
         
@@ -742,7 +770,8 @@ def handle_firebot_oncall(channel_id, user_id):
                 "text": oncall_message,
                 "unfurl_links": False,
                 "unfurl_media": False
-            }
+            },
+            timeout=10
         ).json()
         
         if response.get("ok"):
@@ -871,7 +900,9 @@ def process_fire_ticket(event_data, user_id):
         invite_user_to_channel(user_id, channel_id)
         
         # Step 4.5: Invite JSM ChatOps bot to channel
-        invite_jsm_chatops_bot(channel_id, issue_key)
+        jsm_invite_success = invite_jsm_chatops_bot(channel_id, issue_key)
+        if not jsm_invite_success:
+            print(f"Warning: JSM ChatOps bot invitation failed for {issue_key}, but continuing with workflow")
         
         # Step 5: Post greeting message to incident channel (only once per incident)
         greeting_cache_key = f"greeting_{issue_key}"
@@ -1860,9 +1891,18 @@ def download_and_process_media(attachments):
     processed_files = []
     
     # Slack file size limits (1GB max, but we'll be conservative)
-    MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB limit
+    MAX_FILE_SIZE = 50 * 1024 * 1024  # Reduced to 50MB limit for faster processing
+    MAX_PROCESSING_TIME = 10  # Maximum 10 seconds for media processing
+    
+    import time
+    start_time = time.time()
     
     for attachment in attachments:
+        # Check if we're running out of time
+        if time.time() - start_time > MAX_PROCESSING_TIME:
+            print(f"Media processing timeout reached, stopping after {len(processed_files)} files")
+            break
+            
         try:
             filename = attachment["filename"]
             file_size = attachment["size"]
@@ -1876,27 +1916,33 @@ def download_and_process_media(attachments):
             
             print(f"Downloading {filename} ({file_size} bytes)")
             
-            # Download the file
+            # Download the file with timeout
             download_response = requests.get(
                 download_url,
                 auth=(JIRA_USERNAME, JIRA_API_TOKEN),
-                stream=True  # Stream large files
+                stream=True,  # Stream large files
+                timeout=30  # 30 second timeout for download
             )
             
             if download_response.status_code != 200:
                 print(f"Failed to download {filename}: {download_response.status_code}")
                 continue
             
-            # Read file content
-            file_content = download_response.content
+            # Read file content with timeout protection
+            try:
+                file_content = download_response.content
+            except Exception as e:
+                print(f"Error reading content for {filename}: {e}")
+                continue
             
+            # Skip image validation for faster processing (optional)
             # Basic validation for images
             if mime_type.startswith("image/") and Image:
                 try:
-                    # Validate image by opening it
+                    # Quick validation without full image processing
                     img = Image.open(BytesIO(file_content))
-                    img.verify()  # Verify it's a valid image
-                    print(f"Validated image: {filename} ({img.size[0]}x{img.size[1]})")
+                    # Don't call img.verify() as it's slow
+                    print(f"Processed image: {filename} ({img.size[0]}x{img.size[1]})")
                 except Exception as e:
                     print(f"Invalid image {filename}: {e}")
                     continue
@@ -1918,7 +1964,7 @@ def download_and_process_media(attachments):
             print(f"Error processing attachment {attachment.get('filename', 'unknown')}: {e}")
             continue
     
-    print(f"Successfully processed {len(processed_files)} media files")
+    print(f"Successfully processed {len(processed_files)} media files in {time.time() - start_time:.2f} seconds")
     return processed_files
 
 def upload_media_to_slack(media_files, channel_id, issue_key):
@@ -1948,7 +1994,8 @@ def upload_media_to_slack(media_files, channel_id, issue_key):
                 params={
                     "filename": filename,
                     "length": file_size
-                }
+                },
+                timeout=10  # 10 second timeout
             )
             
             upload_url_result = upload_url_response.json()
@@ -1967,7 +2014,8 @@ def upload_media_to_slack(media_files, channel_id, issue_key):
             print(f"Step 2: Uploading file content for {filename}")
             upload_response = requests.post(
                 upload_url,
-                files={"file": (filename, content, mime_type)}
+                files={"file": (filename, content, mime_type)},
+                timeout=30  # 30 second timeout for upload
             )
             
             if upload_response.status_code != 200:
@@ -1990,7 +2038,8 @@ def upload_media_to_slack(media_files, channel_id, issue_key):
                     "files": [{"id": file_id, "title": f"Attachment from {issue_key}"}],
                     "channel_id": channel_id,
                     "initial_comment": initial_comment
-                }
+                },
+                timeout=10  # 10 second timeout
             )
             
             complete_result = complete_response.json()
@@ -2132,12 +2181,39 @@ def invite_jsm_chatops_bot(channel_id, issue_key):
         
         if response.get("ok"):
             print(f"Successfully invited JSM ChatOps bot to channel for {issue_key}")
+            
+            # Verify the bot is actually in the channel
+            try:
+                verify_response = requests.get(
+                    "https://slack.com/api/conversations.members",
+                    headers=SLACK_HEADERS,
+                    params={"channel": channel_id},
+                    timeout=5
+                ).json()
+                
+                if verify_response.get("ok"):
+                    members = verify_response.get("members", [])
+                    if JSM_CHATOPS_BOT_USER_ID in members:
+                        print(f"✅ Verified JSM ChatOps bot is in channel {channel_id}")
+                        return True
+                    else:
+                        print(f"❌ JSM ChatOps bot not found in channel members: {members}")
+                        return False
+                else:
+                    print(f"Could not verify bot membership: {verify_response.get('error')}")
+                    return True  # Assume success if we can't verify
+            except Exception as e:
+                print(f"Error verifying bot membership: {e}")
+                return True  # Assume success if verification fails
         else:
             error = response.get("error", "unknown error")
-            print(f"Warning: Could not invite JSM ChatOps bot to {channel_id}: {error}")
+            print(f"Failed to invite JSM ChatOps bot to {channel_id}: {error}")
+            print(f"Full response: {response}")
+            return False
             
     except Exception as e:
         print(f"Error inviting JSM ChatOps bot: {e}")
+        return False
 
 def post_welcome_message(source_channel, new_channel_name, new_channel_id):
     response = requests.post(

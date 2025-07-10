@@ -327,8 +327,9 @@ To enable JSM ChatOps integration:
 
 **2. Media Upload Failures**
 - Error `method_deprecated`: Using old Slack API (fixed in current version)
-- Large files: Check file size limits in logs
+- Large files: Check file size limits in logs (reduced to 50MB for faster processing)
 - Invalid images: PIL validation may reject corrupted files
+- Timeout issues: Media processing now has 10-second timeout to prevent Lambda timeouts
 
 **3. Jira Authentication Issues**
 - Verify `JIRA_API_TOKEN` is valid and has read permissions
@@ -345,6 +346,7 @@ To enable JSM ChatOps integration:
 - Check `JSM_CHATOPS_ENABLED` is set to "true"
 - Ensure the JSM bot has proper permissions in your Slack workspace
 - Review logs for invitation errors
+- The bot now verifies membership after invitation and provides fallback messages if the bot isn't available
 
 ### Debugging
 
