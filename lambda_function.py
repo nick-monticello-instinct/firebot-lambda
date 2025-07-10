@@ -43,10 +43,6 @@ if GEMINI_MODEL in MODEL_MAPPING:
 JIRA_HOSPITAL_FIELD = os.environ.get("JIRA_HOSPITAL_FIELD", "customfield_10297")
 JIRA_SUMMARY_FIELD = "customfield_10250"
 
-# JSM ChatOps Bot Configuration
-JSM_CHATOPS_BOT_USER_ID = os.environ.get("JSM_CHATOPS_BOT_USER_ID", "")
-JSM_CHATOPS_ENABLED = os.environ.get("JSM_CHATOPS_ENABLED", "true").lower() == "true"
-
 # DynamoDB configuration
 DYNAMODB_TABLE_NAME = os.environ.get("DYNAMODB_TABLE_NAME", "firebot-coordination")
 DYNAMODB_REGION = os.environ.get("AWS_REGION", "us-east-2")
@@ -525,10 +521,6 @@ def process_firebot_command(event_data, user_id):
             response = handle_firebot_time(channel_id, user_id)
             if response:
                 track_command_response(channel_id, user_id, text, response)
-        elif command == "oncall":
-            response = handle_firebot_oncall(channel_id, user_id)
-            if response:
-                track_command_response(channel_id, user_id, text, response)
         else:
             print(f"Unknown firebot command: {command}")
             response = post_firebot_help(channel_id)
@@ -726,65 +718,6 @@ def format_duration(duration):
         hours = (total_seconds % 86400) // 3600
         return f"{days} day{'s' if days != 1 else ''} and {hours} hour{'s' if hours != 1 else ''}"
 
-def handle_firebot_oncall(channel_id, user_id):
-    """Trigger JSM ChatOps to show on-call schedules"""
-    try:
-        print(f"Triggering on-call schedule display for channel {channel_id}")
-        
-        # First check if JSM ChatOps bot is in the channel
-        try:
-            members_response = requests.get(
-                "https://slack.com/api/conversations.members",
-                headers=SLACK_HEADERS,
-                params={"channel": channel_id},
-                timeout=5
-            ).json()
-            
-            if members_response.get("ok"):
-                members = members_response.get("members", [])
-                if JSM_CHATOPS_BOT_USER_ID not in members:
-                    print(f"JSM ChatOps bot not in channel {channel_id}, posting fallback message")
-                    fallback_message = "📞 **On-Call Information**\n\nTo view current on-call schedules, please ensure the JSM ChatOps bot is available in this channel."
-                    response = requests.post(
-                        "https://slack.com/api/chat.postMessage",
-                        headers=SLACK_HEADERS,
-                        json={
-                            "channel": channel_id,
-                            "text": fallback_message,
-                            "unfurl_links": False,
-                            "unfurl_media": False
-                        }
-                    ).json()
-                    return response.get("ts") if response.get("ok") else None
-        except Exception as e:
-            print(f"Error checking channel members: {e}")
-        
-        # Post the JSM ChatOps command to trigger on-call schedules
-        oncall_message = "/jsmops all schedules"
-        
-        response = requests.post(
-            "https://slack.com/api/chat.postMessage",
-            headers=SLACK_HEADERS,
-            json={
-                "channel": channel_id,
-                "text": oncall_message,
-                "unfurl_links": False,
-                "unfurl_media": False
-            },
-            timeout=10
-        ).json()
-        
-        if response.get("ok"):
-            print(f"Successfully triggered on-call schedule display for channel {channel_id}")
-            return response.get("ts")
-        else:
-            print(f"Error triggering on-call schedule: {response.get('error')}")
-            return None
-            
-    except Exception as e:
-        print(f"Error handling firebot oncall command: {e}")
-        return None
-
 def post_firebot_help(channel_id):
     """Post help information for firebot commands"""
     help_text = """🤖 **FireBot Commands**
@@ -792,7 +725,6 @@ def post_firebot_help(channel_id):
 Available commands:
 • `firebot summary` - Generate a comprehensive summary of the incident
 • `firebot time` - Show how long the incident has been open
-• `firebot oncall` - Show current on-call schedules
 
 Just type one of these commands in the channel!"""
     
@@ -899,11 +831,6 @@ def process_fire_ticket(event_data, user_id):
         # Step 4: Invite user to channel
         invite_user_to_channel(user_id, channel_id)
         
-        # Step 4.5: Invite JSM ChatOps bot to channel
-        jsm_invite_success = invite_jsm_chatops_bot(channel_id, issue_key)
-        if not jsm_invite_success:
-            print(f"Warning: JSM ChatOps bot invitation failed for {issue_key}, but continuing with workflow")
-        
         # Step 5: Post greeting message to incident channel (only once per incident)
         greeting_cache_key = f"greeting_{issue_key}"
         if greeting_cache_key not in processed_events:
@@ -974,20 +901,6 @@ def process_fire_ticket(event_data, user_id):
                 processed_events.discard(media_cache_key)  # Allow retry on next run
         else:
             print(f"Media for {issue_key} already processed, skipping")
-        
-        # Step 11: Show on-call schedules (only once per incident)
-        oncall_cache_key = f"oncall_{issue_key}"
-        if oncall_cache_key not in processed_events:
-            try:
-                processed_events.add(oncall_cache_key)
-                handle_firebot_oncall(channel_id, user_id)
-                print(f"Triggered on-call schedule display for {issue_key}")
-            except Exception as e:
-                print(f"Error showing on-call schedules for {issue_key}: {e}")
-                # Don't fail the entire process if on-call display fails
-                processed_events.discard(oncall_cache_key)  # Allow retry on next run
-        else:
-            print(f"On-call display for {issue_key} already triggered, skipping")
         
         print(f"Successfully processed fire ticket for {issue_key}")
         
@@ -1891,18 +1804,9 @@ def download_and_process_media(attachments):
     processed_files = []
     
     # Slack file size limits (1GB max, but we'll be conservative)
-    MAX_FILE_SIZE = 50 * 1024 * 1024  # Reduced to 50MB limit for faster processing
-    MAX_PROCESSING_TIME = 10  # Maximum 10 seconds for media processing
-    
-    import time
-    start_time = time.time()
+    MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB limit
     
     for attachment in attachments:
-        # Check if we're running out of time
-        if time.time() - start_time > MAX_PROCESSING_TIME:
-            print(f"Media processing timeout reached, stopping after {len(processed_files)} files")
-            break
-            
         try:
             filename = attachment["filename"]
             file_size = attachment["size"]
@@ -1916,33 +1820,27 @@ def download_and_process_media(attachments):
             
             print(f"Downloading {filename} ({file_size} bytes)")
             
-            # Download the file with timeout
+            # Download the file
             download_response = requests.get(
                 download_url,
                 auth=(JIRA_USERNAME, JIRA_API_TOKEN),
-                stream=True,  # Stream large files
-                timeout=30  # 30 second timeout for download
+                stream=True  # Stream large files
             )
             
             if download_response.status_code != 200:
                 print(f"Failed to download {filename}: {download_response.status_code}")
                 continue
             
-            # Read file content with timeout protection
-            try:
-                file_content = download_response.content
-            except Exception as e:
-                print(f"Error reading content for {filename}: {e}")
-                continue
+            # Read file content
+            file_content = download_response.content
             
-            # Skip image validation for faster processing (optional)
             # Basic validation for images
             if mime_type.startswith("image/") and Image:
                 try:
-                    # Quick validation without full image processing
+                    # Validate image by opening it
                     img = Image.open(BytesIO(file_content))
-                    # Don't call img.verify() as it's slow
-                    print(f"Processed image: {filename} ({img.size[0]}x{img.size[1]})")
+                    img.verify()  # Verify it's a valid image
+                    print(f"Validated image: {filename} ({img.size[0]}x{img.size[1]})")
                 except Exception as e:
                     print(f"Invalid image {filename}: {e}")
                     continue
@@ -1964,7 +1862,7 @@ def download_and_process_media(attachments):
             print(f"Error processing attachment {attachment.get('filename', 'unknown')}: {e}")
             continue
     
-    print(f"Successfully processed {len(processed_files)} media files in {time.time() - start_time:.2f} seconds")
+    print(f"Successfully processed {len(processed_files)} media files")
     return processed_files
 
 def upload_media_to_slack(media_files, channel_id, issue_key):
@@ -1994,8 +1892,7 @@ def upload_media_to_slack(media_files, channel_id, issue_key):
                 params={
                     "filename": filename,
                     "length": file_size
-                },
-                timeout=10  # 10 second timeout
+                }
             )
             
             upload_url_result = upload_url_response.json()
@@ -2014,8 +1911,7 @@ def upload_media_to_slack(media_files, channel_id, issue_key):
             print(f"Step 2: Uploading file content for {filename}")
             upload_response = requests.post(
                 upload_url,
-                files={"file": (filename, content, mime_type)},
-                timeout=30  # 30 second timeout for upload
+                files={"file": (filename, content, mime_type)}
             )
             
             if upload_response.status_code != 200:
@@ -2038,8 +1934,7 @@ def upload_media_to_slack(media_files, channel_id, issue_key):
                     "files": [{"id": file_id, "title": f"Attachment from {issue_key}"}],
                     "channel_id": channel_id,
                     "initial_comment": initial_comment
-                },
-                timeout=10  # 10 second timeout
+                }
             )
             
             complete_result = complete_response.json()
@@ -2160,60 +2055,6 @@ def invite_user_to_channel(user_id, channel_id):
     ).json()
     if not response.get("ok"):
         print(f"Warning: Could not invite user {user_id} to {channel_id}: {response.get('error')}")
-
-def invite_jsm_chatops_bot(channel_id, issue_key):
-    """Invite the JSM ChatOps bot to the incident channel"""
-    if not JSM_CHATOPS_ENABLED:
-        print("JSM ChatOps integration is disabled")
-        return
-    
-    if not JSM_CHATOPS_BOT_USER_ID:
-        print("JSM ChatOps bot user ID not configured, skipping invitation")
-        return
-    
-    try:
-        print(f"Inviting JSM ChatOps bot to incident channel for {issue_key}")
-        response = requests.post(
-            "https://slack.com/api/conversations.invite",
-            headers=SLACK_HEADERS,
-            json={"channel": channel_id, "users": JSM_CHATOPS_BOT_USER_ID}
-        ).json()
-        
-        if response.get("ok"):
-            print(f"Successfully invited JSM ChatOps bot to channel for {issue_key}")
-            
-            # Verify the bot is actually in the channel
-            try:
-                verify_response = requests.get(
-                    "https://slack.com/api/conversations.members",
-                    headers=SLACK_HEADERS,
-                    params={"channel": channel_id},
-                    timeout=5
-                ).json()
-                
-                if verify_response.get("ok"):
-                    members = verify_response.get("members", [])
-                    if JSM_CHATOPS_BOT_USER_ID in members:
-                        print(f"✅ Verified JSM ChatOps bot is in channel {channel_id}")
-                        return True
-                    else:
-                        print(f"❌ JSM ChatOps bot not found in channel members: {members}")
-                        return False
-                else:
-                    print(f"Could not verify bot membership: {verify_response.get('error')}")
-                    return True  # Assume success if we can't verify
-            except Exception as e:
-                print(f"Error verifying bot membership: {e}")
-                return True  # Assume success if verification fails
-        else:
-            error = response.get("error", "unknown error")
-            print(f"Failed to invite JSM ChatOps bot to {channel_id}: {error}")
-            print(f"Full response: {response}")
-            return False
-            
-    except Exception as e:
-        print(f"Error inviting JSM ChatOps bot: {e}")
-        return False
 
 def post_welcome_message(source_channel, new_channel_name, new_channel_id):
     response = requests.post(
@@ -2525,7 +2366,6 @@ I'm FireBot, your AI-powered incident management assistant. Here's what I can he
 🤖 **AI Commands Available:**
 • `firebot summary` - Generate a comprehensive AI summary of the incident
 • `firebot time` - Show how long the incident has been open
-• `firebot oncall` - Show current on-call schedules
 
 💡 **What I've already done:**
 • Analyzed the Jira ticket for missing investigation details
@@ -2546,24 +2386,3 @@ Just type one of the commands above to get started! I'm here to help make incide
     ).json()
     if not response.get("ok"):
         print(f"Error posting incident channel greeting: {response.get('error')}")
-
-# --- TESTING FUNCTIONS ---
-def test_jsm_chatops_integration():
-    """Test function to verify JSM ChatOps integration configuration"""
-    print("=== JSM ChatOps Integration Test ===")
-    print(f"JSM ChatOps Enabled: {JSM_CHATOPS_ENABLED}")
-    print(f"JSM ChatOps Bot User ID: {JSM_CHATOPS_BOT_USER_ID}")
-    
-    if JSM_CHATOPS_ENABLED and JSM_CHATOPS_BOT_USER_ID:
-        print("✅ JSM ChatOps integration is properly configured")
-        return True
-    elif not JSM_CHATOPS_ENABLED:
-        print("⚠️ JSM ChatOps integration is disabled")
-        return False
-    else:
-        print("❌ JSM ChatOps bot user ID is not configured")
-        return False
-
-# Uncomment the following line to test JSM ChatOps configuration
-# if __name__ == "__main__":
-#     test_jsm_chatops_integration()
