@@ -1,77 +1,58 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'DynamoDB table for FireBot coordination'
+Description: 'DynamoDB table for FireBot incident coordination'
 
 Resources:
-  FireBotFunction:
-    Type: 'AWS::Lambda::Function'
-    Properties:
-      FunctionName: firebot-handler
-      Runtime: python3.11
-      Handler: lambda_function.lambda_handler
-      Code:
-        S3Bucket: !Ref 'CodeBucket'
-        S3Key: !Ref 'CodeKey'
-      Role: !GetAtt LambdaExecutionRole.Arn
-      Timeout: 60
-      MemorySize: 256
-      Environment:
-        Variables:
-          DYNAMODB_TABLE_NAME: !Ref FireBotCoordinationTable
-          AWS_REGION: !Ref 'AWS::Region'
-
   FireBotCoordinationTable:
-    Type: 'AWS::DynamoDB::Table'
+    Type: AWS::DynamoDB::Table
     Properties:
       TableName: firebot-coordination
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: incident_key
           AttributeType: S
+        - AttributeName: channel_id
+          AttributeType: S
+        - AttributeName: user_id
+          AttributeType: S
+        - AttributeName: event_type
+          AttributeType: S
       KeySchema:
         - AttributeName: incident_key
           KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: channel_user_index
+          KeySchema:
+            - AttributeName: channel_id
+              KeyType: HASH
+            - AttributeName: user_id
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: event_type_index
+          KeySchema:
+            - AttributeName: event_type
+              KeyType: HASH
+            - AttributeName: incident_key
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
       TimeToLiveSpecification:
         AttributeName: expiration_time
         Enabled: true
-
-  LambdaExecutionRole:
-    Type: 'AWS::IAM::Role'
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-      Policies:
-        - PolicyName: DynamoDBAccess
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - dynamodb:PutItem
-                  - dynamodb:GetItem
-                  - dynamodb:DeleteItem
-                  - dynamodb:UpdateItem
-                  - dynamodb:Query
-                Resource: !GetAtt FireBotCoordinationTable.Arn
-
-Parameters:
-  CodeBucket:
-    Type: String
-    Description: S3 bucket containing the Lambda function code
-  CodeKey:
-    Type: String
-    Description: S3 key for the Lambda function code
+      Tags:
+        - Key: Name
+          Value: FireBot-Coordination
+        - Key: Purpose
+          Value: Incident processing coordination
 
 Outputs:
   TableName:
     Description: Name of the DynamoDB table
     Value: !Ref FireBotCoordinationTable
+    Export:
+      Name: FireBotCoordinationTableName
   TableArn:
     Description: ARN of the DynamoDB table
-    Value: !GetAtt FireBotCoordinationTable.Arn 
+    Value: !GetAtt FireBotCoordinationTable.Arn
+    Export:
+      Name: FireBotCoordinationTableArn 

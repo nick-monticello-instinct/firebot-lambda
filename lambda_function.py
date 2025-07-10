@@ -1443,17 +1443,10 @@ def generate_missing_items_requests(missing_items, issue_key, parsed_data):
     try:
         missing_items_text = "\n".join([f"• {item['item']}: {item['explanation']}" for item in missing_items])
         
-        # Safely get summary text
-        summary_text = ""
-        if isinstance(parsed_data, dict):
-            summary = parsed_data.get('summary', '')
-            if summary and isinstance(summary, str):
-                summary_text = summary[:200] + ('...' if len(summary) > 200 else '')
-        
         prompt = f"""You are a helpful incident response assistant for a veterinary software company. Generate a friendly, specific request for missing investigation details.
 
 INCIDENT: {issue_key}
-SUMMARY: {summary_text}
+SUMMARY: {parsed_data.get('summary', '')[:200]}
 
 MISSING ITEMS:
 {missing_items_text}
