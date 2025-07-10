@@ -43,9 +43,6 @@ if GEMINI_MODEL in MODEL_MAPPING:
 JIRA_HOSPITAL_FIELD = os.environ.get("JIRA_HOSPITAL_FIELD", "customfield_10297")
 JIRA_SUMMARY_FIELD = "customfield_10250"
 
-# Jira Service Management (JSM) on-call configuration
-JSM_ONCALL_SCHEDULE_NAMES = os.environ.get("JSM_ONCALL_SCHEDULE_NAMES", "").split(",") if os.environ.get("JSM_ONCALL_SCHEDULE_NAMES") else []
-
 # DynamoDB configuration
 DYNAMODB_TABLE_NAME = os.environ.get("DYNAMODB_TABLE_NAME", "firebot-coordination")
 DYNAMODB_REGION = os.environ.get("AWS_REGION", "us-east-2")
@@ -843,16 +840,7 @@ def process_fire_ticket(event_data, user_id):
         else:
             print(f"Greeting message for {issue_key} already posted, skipping")
         
-        # Step 6: Post on-call status to incident channel (only once per incident)
-        oncall_cache_key = f"oncall_{issue_key}"
-        if oncall_cache_key not in processed_events:
-            processed_events.add(oncall_cache_key)
-            post_oncall_status(channel_id, issue_key)
-            print(f"Posted on-call status for {issue_key}")
-        else:
-            print(f"On-call status for {issue_key} already posted, skipping")
-        
-        # Step 7: Post welcome message to source channel (only once per incident)
+        # Step 6: Post welcome message to source channel (only once per incident)
         welcome_cache_key = f"welcome_{issue_key}"
         if welcome_cache_key not in processed_events:
             processed_events.add(welcome_cache_key)
@@ -861,7 +849,7 @@ def process_fire_ticket(event_data, user_id):
         else:
             print(f"Welcome message for {issue_key} already posted, skipping")
         
-        # Step 8: Generate and post summary (only once per incident)
+        # Step 7: Generate and post summary (only once per incident)
         summary_cache_key = f"summary_{issue_key}"
         if summary_cache_key not in processed_events:
             processed_events.add(summary_cache_key)
@@ -872,11 +860,11 @@ def process_fire_ticket(event_data, user_id):
         else:
             print(f"Summary for {issue_key} already posted, skipping")
         
-        # Step 9: Fetch attachments once for both analysis and media processing
+        # Step 8: Fetch attachments once for both analysis and media processing
         print(f"Fetching attachments for analysis and media processing: {issue_key}")
         attachments = fetch_jira_attachments(issue_key)
         
-        # Step 10: Analyze ticket for missing information and reach out to creator (critical step)
+        # Step 9: Analyze ticket for missing information and reach out to creator (critical step)
         analysis_cache_key = f"analysis_{issue_key}"
         if analysis_cache_key not in processed_events:
             print(f"Starting analysis and outreach for {issue_key}")
@@ -889,7 +877,7 @@ def process_fire_ticket(event_data, user_id):
         else:
             print(f"Analysis for {issue_key} already completed, skipping")
         
-        # Step 11: Process media attachments from Jira ticket
+        # Step 10: Process media attachments from Jira ticket
         media_cache_key = f"media_{issue_key}"
         if media_cache_key not in processed_events:
             try:
@@ -2398,144 +2386,3 @@ Just type one of the commands above to get started! I'm here to help make incide
     ).json()
     if not response.get("ok"):
         print(f"Error posting incident channel greeting: {response.get('error')}")
-
-# --- JIRA SERVICE MANAGEMENT (JSM) ON-CALL INTEGRATION FUNCTIONS ---
-def get_jsm_oncall_schedules():
-    """Get list of available JSM on-call schedules"""
-    try:
-        response = requests.get(
-            f"https://{JIRA_DOMAIN}/rest/servicedesk/1/oncall/schedules",
-            auth=(JIRA_USERNAME, JIRA_API_TOKEN),
-            headers={"Accept": "application/json"}
-        )
-        
-        if response.status_code == 200:
-            data = response.json()
-            schedules = data.get("values", [])
-            print(f"Found {len(schedules)} JSM on-call schedules")
-            return schedules
-        else:
-            print(f"Failed to fetch JSM on-call schedules: {response.status_code} - {response.text}")
-            return []
-            
-    except Exception as e:
-        print(f"Error fetching JSM on-call schedules: {e}")
-        return []
-
-def get_jsm_oncall_users(schedule_name):
-    """Get current on-call users for a specific JSM schedule"""
-    try:
-        # First, find the schedule ID by name
-        schedules = get_jsm_oncall_schedules()
-        schedule_id = None
-        
-        for schedule in schedules:
-            if schedule.get("name", "").lower() == schedule_name.lower():
-                schedule_id = schedule.get("id")
-                break
-        
-        if not schedule_id:
-            print(f"Schedule '{schedule_name}' not found in JSM")
-            return []
-        
-        # Get on-call users for this schedule
-        response = requests.get(
-            f"https://{JIRA_DOMAIN}/rest/servicedesk/1/oncall/schedules/{schedule_id}/current",
-            auth=(JIRA_USERNAME, JIRA_API_TOKEN),
-            headers={"Accept": "application/json"}
-        )
-        
-        if response.status_code == 200:
-            data = response.json()
-            oncall_users = []
-            
-            # Extract users from the on-call data
-            for participant in data.get("participants", []):
-                user_info = participant.get("user", {})
-                if user_info:
-                    user_id = user_info.get("accountId")
-                    user_name = user_info.get("displayName", "Unknown")
-                    user_email = user_info.get("emailAddress", "")
-                    
-                    oncall_users.append({
-                        "id": user_id,
-                        "name": user_name,
-                        "email": user_email
-                    })
-            
-            print(f"Found {len(oncall_users)} on-call users for schedule '{schedule_name}'")
-            return oncall_users
-        else:
-            print(f"Failed to fetch on-call users for schedule '{schedule_name}': {response.status_code} - {response.text}")
-            return []
-            
-    except Exception as e:
-        print(f"Error fetching on-call users for schedule '{schedule_name}': {e}")
-        return []
-
-def format_oncall_message(oncall_data):
-    """Format on-call information for Slack message"""
-    if not oncall_data:
-        return "👥 **On-Call Information**\n\nNo on-call information available at this time."
-    
-    message_lines = ["👥 **Current On-Call Team**\n"]
-    
-    for schedule_name, users in oncall_data.items():
-        if users:
-            message_lines.append(f"**{schedule_name.title()}:**")
-            for user in users:
-                user_name = user.get("name", "Unknown")
-                user_email = user.get("email", "")
-                if user_email:
-                    message_lines.append(f"• {user_name} ({user_email})")
-                else:
-                    message_lines.append(f"• {user_name}")
-            message_lines.append("")
-    
-    if len(message_lines) == 1:  # Only the header
-        message_lines.append("No on-call users found.")
-    
-    message_lines.append("Need to escalate? Tag the appropriate team member above.")
-    
-    return "\n".join(message_lines)
-
-def post_oncall_status(channel_id, issue_key):
-    """Post current on-call status to incident channel"""
-    if not JSM_ONCALL_SCHEDULE_NAMES:
-        print("JSM on-call schedules not configured, skipping on-call status")
-        return
-    
-    try:
-        print(f"Fetching on-call information for {issue_key}")
-        oncall_data = {}
-        
-        for schedule_name in JSM_ONCALL_SCHEDULE_NAMES:
-            schedule_name = schedule_name.strip()
-            if schedule_name:
-                users = get_jsm_oncall_users(schedule_name)
-                if users:
-                    oncall_data[schedule_name] = users
-        
-        if oncall_data:
-            message = format_oncall_message(oncall_data)
-            
-            response = requests.post(
-                "https://slack.com/api/chat.postMessage",
-                headers=SLACK_HEADERS,
-                json={
-                    "channel": channel_id,
-                    "text": message,
-                    "unfurl_links": False,
-                    "unfurl_media": False
-                }
-            ).json()
-            
-            if response.get("ok"):
-                print(f"Successfully posted on-call status for {issue_key}")
-            else:
-                print(f"Error posting on-call status: {response.get('error')}")
-        else:
-            print(f"No on-call users found for {issue_key}")
-            
-    except Exception as e:
-        print(f"Error posting on-call status for {issue_key}: {e}")
