@@ -40,6 +40,10 @@ if GEMINI_MODEL in MODEL_MAPPING:
     GEMINI_MODEL = MODEL_MAPPING[GEMINI_MODEL]
     print(f"Mapped model to: {GEMINI_MODEL}")
 
+# JSM ChatOps Configuration
+JSM_CHATOPS_BOT_USER_ID = os.environ.get("JSM_CHATOPS_BOT_USER_ID")
+JSM_CHATOPS_ENABLED = os.environ.get("JSM_CHATOPS_ENABLED", "true").lower() == "true"
+
 JIRA_HOSPITAL_FIELD = os.environ.get("JIRA_HOSPITAL_FIELD", "customfield_10297")
 JIRA_SUMMARY_FIELD = "customfield_10250"
 
@@ -828,8 +832,9 @@ def process_fire_ticket(event_data, user_id):
         # Step 4: Post coordination message to claim ownership
         post_coordination_message(channel_id, issue_key)
         
-        # Step 4: Invite user to channel
+        # Step 4: Invite user and JSM bot to channel
         invite_user_to_channel(user_id, channel_id)
+        invite_jsm_bot(channel_id)
         
         # Step 5: Post greeting message to incident channel (only once per incident)
         greeting_cache_key = f"greeting_{issue_key}"
@@ -2298,6 +2303,35 @@ def cleanup_temp_lock_channel(channel_name):
         print(f"This is normal - the lock channel will remain but won't interfere with future operations")
     except Exception as e:
         print(f"Error in cleanup (expected): {e}")
+
+def invite_jsm_bot(channel_id):
+    """Invites the JSM ChatOps bot to the incident channel if enabled."""
+    if not JSM_CHATOPS_ENABLED or not JSM_CHATOPS_BOT_USER_ID:
+        print("JSM ChatOps integration disabled or bot ID not configured")
+        return
+
+    try:
+        print(f"Inviting JSM ChatOps bot ({JSM_CHATOPS_BOT_USER_ID}) to channel {channel_id}")
+        response = requests.post(
+            "https://slack.com/api/conversations.invite",
+            headers=SLACK_HEADERS,
+            json={
+                "channel": channel_id,
+                "users": JSM_CHATOPS_BOT_USER_ID
+            }
+        ).json()
+
+        if response.get("ok"):
+            print("Successfully invited JSM ChatOps bot")
+        else:
+            error = response.get("error")
+            if error == "already_in_channel":
+                print("JSM ChatOps bot is already in the channel")
+            else:
+                print(f"Failed to invite JSM ChatOps bot: {error}")
+
+    except Exception as e:
+        print(f"Error inviting JSM ChatOps bot: {e}")
 
 def track_command_response(channel_id, user_id, command_text, response_ts):
     """Track a command response to prevent processing bot messages that are our responses"""
