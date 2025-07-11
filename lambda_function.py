@@ -521,6 +521,10 @@ def process_firebot_command(event_data, user_id):
             response = handle_firebot_time(channel_id, user_id)
             if response:
                 track_command_response(channel_id, user_id, text, response)
+        elif command == "timeline":
+            response = handle_firebot_timeline(channel_id, user_id)
+            if response:
+                track_command_response(channel_id, user_id, text, response)
         else:
             print(f"Unknown firebot command: {command}")
             response = post_firebot_help(channel_id)
@@ -725,6 +729,7 @@ def post_firebot_help(channel_id):
 Available commands:
 • `firebot summary` - Generate a comprehensive summary of the incident
 • `firebot time` - Show how long the incident has been open
+• `firebot timeline` - Generate a detailed timeline of events and response metrics
 
 Additional Useful Commands:
 • `/jsmops all schedules` - View the current on-call schedule 👥
@@ -2454,3 +2459,205 @@ def update_jira_with_slack_link(issue_key, channel_name, channel_id):
             
     except Exception as e:
         print(f"Error updating Jira ticket with Slack link: {e}")
+
+def handle_firebot_timeline(channel_id, user_id):
+    """Generate a detailed timeline of events in the incident channel"""
+    try:
+        print(f"Generating incident timeline for channel {channel_id}")
+        
+        # Get channel info for creation time
+        channel_info = get_channel_info(channel_id)
+        if not channel_info:
+            response_ts = post_message(channel_id, "Could not retrieve channel information.")
+            return response_ts
+        
+        created_timestamp = channel_info.get("created", 0)
+        channel_name = channel_info.get("name", "")
+        
+        # Get complete channel history
+        messages = get_channel_history(channel_id, limit=1000)  # Get more messages for timeline
+        if not messages:
+            response_ts = post_message(channel_id, "Could not retrieve channel history for timeline.")
+            return response_ts
+        
+        # Sort messages by timestamp
+        messages.sort(key=lambda x: float(x.get("ts", 0)))
+        
+        # Track key events and metrics
+        timeline_data = analyze_channel_timeline(messages, created_timestamp, channel_id)
+        
+        # Generate timeline message
+        timeline_message = format_timeline_message(timeline_data, channel_name)
+        
+        # Post the timeline
+        response_ts = post_message(channel_id, timeline_message)
+        return response_ts
+        
+    except Exception as e:
+        print(f"Error generating incident timeline: {e}")
+        response_ts = post_message(channel_id, "Sorry, I encountered an error while generating the timeline.")
+        return response_ts
+
+def analyze_channel_timeline(messages, created_timestamp, channel_id):
+    """Analyze channel messages to create a timeline of events"""
+    timeline_data = {
+        "created_time": datetime.datetime.fromtimestamp(created_timestamp),
+        "first_response_time": None,
+        "resolution_time": None,
+        "total_duration": None,
+        "key_events": [],
+        "participants": set(),
+        "bot_user_ids": [os.environ.get("SLACK_BOT_USER_ID"), "U09584DT15X"],
+        "first_engineer_response": None
+    }
+    
+    # Track when users join
+    joined_users = set()
+    
+    for msg in messages:
+        timestamp = float(msg.get("ts", 0))
+        msg_time = datetime.datetime.fromtimestamp(timestamp)
+        user_id = msg.get("user", "")
+        text = msg.get("text", "")
+        subtype = msg.get("subtype", "")
+        
+        # Skip bot messages for participant tracking
+        if user_id in timeline_data["bot_user_ids"] or msg.get("bot_id") or msg.get("app_id"):
+            # But still analyze bot messages for key events
+            if "incident channel created" in text.lower():
+                timeline_data["key_events"].append({
+                    "time": msg_time,
+                    "event": "Incident Channel Created",
+                    "details": "Bot created incident channel"
+                })
+            elif "uploaded" in text.lower() and "media file" in text.lower():
+                timeline_data["key_events"].append({
+                    "time": msg_time,
+                    "event": "Media Uploaded",
+                    "details": "Screenshots/media files uploaded from Jira"
+                })
+            continue
+        
+        # Track channel joins
+        if subtype == "channel_join" and user_id not in joined_users:
+            joined_users.add(user_id)
+            # Get user info for better display
+            user_info = get_user_info(user_id)
+            display_name = user_info.get("real_name", user_id) if user_info else user_id
+            timeline_data["key_events"].append({
+                "time": msg_time,
+                "event": "User Joined",
+                "details": f"{display_name} joined the channel"
+            })
+        
+        # Track first engineer response (any message from a non-bot user)
+        if not timeline_data["first_engineer_response"] and user_id not in timeline_data["bot_user_ids"]:
+            timeline_data["first_engineer_response"] = msg_time
+            user_info = get_user_info(user_id)
+            display_name = user_info.get("real_name", user_id) if user_info else user_id
+            timeline_data["key_events"].append({
+                "time": msg_time,
+                "event": "First Response",
+                "details": f"First response from {display_name}"
+            })
+        
+        # Track resolution indicators
+        resolution_keywords = ["resolved", "fixed", "solution", "closing", "completed"]
+        if any(keyword in text.lower() for keyword in resolution_keywords):
+            timeline_data["resolution_time"] = msg_time
+            user_info = get_user_info(user_id)
+            display_name = user_info.get("real_name", user_id) if user_info else user_id
+            timeline_data["key_events"].append({
+                "time": msg_time,
+                "event": "Resolution",
+                "details": f"Resolution indicated by {display_name}"
+            })
+        
+        # Track investigation activities
+        investigation_keywords = ["investigating", "checked", "found", "tested", "reproduced", "identified"]
+        if any(keyword in text.lower() for keyword in investigation_keywords):
+            user_info = get_user_info(user_id)
+            display_name = user_info.get("real_name", user_id) if user_info else user_id
+            timeline_data["key_events"].append({
+                "time": msg_time,
+                "event": "Investigation",
+                "details": f"Investigation update from {display_name}"
+            })
+        
+        # Add to participants set
+        if user_id and user_id not in timeline_data["bot_user_ids"]:
+            timeline_data["participants"].add(user_id)
+    
+    # Calculate response metrics
+    if timeline_data["first_engineer_response"]:
+        response_time = timeline_data["first_engineer_response"] - timeline_data["created_time"]
+        timeline_data["first_response_time"] = response_time
+    
+    if timeline_data["resolution_time"]:
+        total_time = timeline_data["resolution_time"] - timeline_data["created_time"]
+        timeline_data["total_duration"] = total_time
+    
+    return timeline_data
+
+def format_timeline_message(timeline_data, channel_name):
+    """Format the timeline data into a readable message"""
+    created_time = timeline_data["created_time"]
+    
+    # Format header
+    header = f"📊 **Incident Timeline for #{channel_name}**\n\n"
+    
+    # Format response metrics
+    metrics = ["🕐 **Response Metrics:**"]
+    if timeline_data["first_response_time"]:
+        metrics.append(f"• Time to First Response: {format_duration(timeline_data['first_response_time'])}")
+    if timeline_data["total_duration"]:
+        metrics.append(f"• Total Resolution Time: {format_duration(timeline_data['total_duration'])}")
+    metrics.append(f"• Incident Start: {created_time.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+    
+    # Format participants
+    participants = []
+    for user_id in timeline_data["participants"]:
+        user_info = get_user_info(user_id)
+        if user_info:
+            participants.append(user_info.get("real_name", user_id))
+        else:
+            participants.append(user_id)
+    
+    participant_section = "\n👥 **Participants:**\n• " + "\n• ".join(participants)
+    
+    # Format timeline events
+    timeline_events = ["\n⏰ **Event Timeline:**"]
+    sorted_events = sorted(timeline_data["key_events"], key=lambda x: x["time"])
+    
+    for event in sorted_events:
+        time_str = event["time"].strftime("%H:%M:%S UTC")
+        timeline_events.append(f"• {time_str} - {event['event']}: {event['details']}")
+    
+    # Combine all sections
+    message = "\n".join([
+        header,
+        "\n".join(metrics),
+        participant_section,
+        "\n".join(timeline_events)
+    ])
+    
+    return message
+
+def get_user_info(user_id):
+    """Get user information from Slack"""
+    try:
+        response = requests.get(
+            "https://slack.com/api/users.info",
+            headers=SLACK_HEADERS,
+            params={"user": user_id}
+        ).json()
+        
+        if response.get("ok"):
+            return response.get("user", {})
+        else:
+            print(f"Could not get user info: {response.get('error')}")
+            return None
+            
+    except Exception as e:
+        print(f"Error getting user info: {e}")
+        return None
