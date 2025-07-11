@@ -45,6 +45,7 @@ FireBot analyzes each ticket against 7 critical investigation items:
 ### 🤖 **Interactive Commands**
 - **Channel Summary**: `firebot summary` - Generate comprehensive incident summaries using AI
 - **Duration Tracking**: `firebot time` - Show how long the incident has been open
+- **Timeline Analysis**: `firebot timeline` - Generate detailed timeline with response metrics
 - **Smart Detection**: Only responds to commands in incident channels
 - **AI-Powered Analysis**: Uses Gemini to analyze channel history and provide insights
 
