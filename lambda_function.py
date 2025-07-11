@@ -2377,6 +2377,7 @@ I'm FireBot, your AI-powered incident management assistant. Here's what I can he
 
 📚 **Helpful Resources:**
 • <https://www.notion.so/instinctvet/Production-Support-Technical-How-Tos-d1c221f62ca64ce1ba76885fb8190aeb|Production Support Technical How-Tos> - Common troubleshooting steps and solutions
+• <https://instinctual.instinctvet.com|Instinctual> - Access customer instances for problem replication
 • <https://app.datadoghq.com/logs|Datadog Logs> - View application and system logs
 • Use `/jsmops all schedules` to see who's currently on-call
 
