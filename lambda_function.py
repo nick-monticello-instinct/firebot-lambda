@@ -726,6 +726,9 @@ Available commands:
 • `firebot summary` - Generate a comprehensive summary of the incident
 • `firebot time` - Show how long the incident has been open
 
+Additional Useful Commands:
+• `/jsmops all schedules` - View the current on-call schedule 👥
+
 Just type one of these commands in the channel!"""
     
     response_ts = post_message(channel_id, help_text)
@@ -2366,6 +2369,9 @@ I'm FireBot, your AI-powered incident management assistant. Here's what I can he
 🤖 **AI Commands Available:**
 • `firebot summary` - Generate a comprehensive AI summary of the incident
 • `firebot time` - Show how long the incident has been open
+
+👥 **On-Call Information:**
+• Use `/jsmops all schedules` to see who's currently on-call
 
 💡 **What I've already done:**
 • Analyzed the Jira ticket for missing investigation details
