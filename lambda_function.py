@@ -2367,7 +2367,7 @@ def post_incident_channel_greeting(channel_id, issue_key):
     """Post a greeting message to the incident channel with AI command information"""
     greeting_text = f"""🚨 **Welcome to the incident channel for {issue_key}!**
 
-🔗 **Jira Ticket:** https://{JIRA_DOMAIN}/browse/{issue_key}
+🔗 **Jira Ticket:** <https://{JIRA_DOMAIN}/browse/{issue_key}|{issue_key}>
 
 I'm FireBot, your AI-powered incident management assistant. Here's what I can help you with:
 
@@ -2375,7 +2375,9 @@ I'm FireBot, your AI-powered incident management assistant. Here's what I can he
 • `firebot summary` - Generate a comprehensive AI summary of the incident
 • `firebot time` - Show how long the incident has been open
 
-👥 **On-Call Information:**
+📚 **Helpful Resources:**
+• <https://www.notion.so/instinctvet/Production-Support-Technical-How-Tos-d1c221f62ca64ce1ba76885fb8190aeb|Production Support Technical How-Tos> - Common troubleshooting steps and solutions
+• <https://app.datadoghq.com/logs|Datadog Logs> - View application and system logs
 • Use `/jsmops all schedules` to see who's currently on-call
 
 💡 **What I've already done:**
