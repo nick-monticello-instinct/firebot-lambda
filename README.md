@@ -50,8 +50,7 @@ FireBot analyzes each ticket against 7 critical investigation items:
 
 ### 🔗 **JSM ChatOps Integration**
 - **Automatic Bot Invitation**: Automatically invites JSM ChatOps bot to incident channels
-- **On-Call Schedule Display**: Automatically shows current on-call schedules at the end of incident setup
-- **Manual On-Call Command**: `firebot oncall` command to trigger on-call schedule display
+- **On-Call Schedule Access**: Use `/jsmops all schedules` to view current on-call schedules
 - **Seamless Workflow**: Integrates with existing FireBot functionality without disrupting the user experience
 
 ## 🚀 Getting Started
@@ -198,16 +197,17 @@ Pillow>=9.0.0
 4. **Media Processing**: Downloads and uploads any screenshots/videos from the ticket
 
 5. **Creator Outreach**: Invites ticket creator and provides specific guidance on missing information
-6. **On-Call Display**: Automatically shows current on-call schedules
+6. **JSM Integration**: Access on-call schedules using `/jsmops all schedules`
 
 ### Interactive Commands
 
 Once in an incident channel, users can interact with FireBot:
 
 ```
-firebot summary  # Generate comprehensive incident summary
-firebot time     # Show incident duration
-firebot oncall   # Show current on-call schedules
+firebot summary   # Generate comprehensive incident summary
+firebot time      # Show incident duration
+firebot timeline  # Generate detailed timeline with response metrics
+/jsmops all schedules  # View the current on-call schedule 👥
 ```
 
 ### Sample Output
@@ -248,6 +248,29 @@ This information will help us resolve the issue faster. Thanks for your collabor
 
 Key Events:
 • 14:30 - Issue first reported by @john
+```
+
+**Timeline Command:**
+```
+📊 **Incident Timeline for #incident-isd-12345-20250109-amc**
+
+🕐 **Response Metrics:**
+• Time to First Engineer Response: 5 minutes
+• Total Resolution Time: 45 minutes
+• Incident Start: 2025-01-09 14:30:00 UTC
+
+👥 **Participants:**
+• John Smith
+• Sarah Engineer
+• Mike Support
+
+⏰ **Event Timeline:**
+• 14:30:00 - Incident Channel Created: Bot created incident channel
+• 14:31:00 - Creator Joined: Ticket creator John Smith joined the channel
+• 14:32:00 - Engineer Joined: Engineer Sarah Engineer joined the channel
+• 14:35:00 - First Engineer Response: First response from engineer Sarah Engineer
+• 14:40:00 - Investigation: Investigation update from Sarah Engineer
+• 15:15:00 - Resolution: Resolution indicated by Sarah Engineer
 • 14:45 - @sarah joined to investigate
 • 15:00 - Root cause identified as database connection issue
 • 15:15 - Fix deployed to staging
