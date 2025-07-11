@@ -525,6 +525,10 @@ def process_firebot_command(event_data, user_id):
             response = handle_firebot_timeline(channel_id, user_id)
             if response:
                 track_command_response(channel_id, user_id, text, response)
+        elif command == "resolve":
+            response = handle_firebot_resolve(channel_id, user_id)
+            if response:
+                track_command_response(channel_id, user_id, text, response)
         else:
             print(f"Unknown firebot command: {command}")
             response = post_firebot_help(channel_id)
@@ -730,6 +734,7 @@ Available commands:
 • `firebot summary` - Generate a comprehensive summary of the incident
 • `firebot time` - Show how long the incident has been open
 • `firebot timeline` - Generate a detailed timeline of events and response metrics
+• `firebot resolve` - Mark incident as resolved and post summary to Jira ticket
 
 Additional Useful Commands:
 • `/jsmops all schedules` - View the current on-call schedule 👥
@@ -2380,6 +2385,7 @@ I'm FireBot, your AI-powered incident management assistant. Here's what I can he
 • `firebot summary` - Generate a comprehensive AI summary of the incident
 • `firebot time` - Show how long the incident has been open
 • `firebot timeline` - Generate a detailed timeline of events and response metrics
+• `firebot resolve` - Mark incident as resolved and post summary to Jira ticket
 
 📚 **Helpful Resources:**
 • <https://www.notion.so/instinctvet/Production-Support-Technical-How-Tos-d1c221f62ca64ce1ba76885fb8190aeb|Production Support Technical How-Tos> - Common troubleshooting steps and solutions
@@ -2697,3 +2703,257 @@ def get_user_info(user_id):
     except Exception as e:
         print(f"Error getting user info: {e}")
         return None
+
+def handle_firebot_resolve(channel_id, user_id):
+    """Handle the firebot resolve command"""
+    try:
+        print(f"Processing resolve command for channel {channel_id}")
+        
+        # Get channel info to extract issue key
+        channel_info = get_channel_info(channel_id)
+        if not channel_info:
+            response_ts = post_message(channel_id, "Could not retrieve channel information.")
+            return response_ts
+        
+        channel_name = channel_info.get("name", "")
+        
+        # Extract issue key from channel name
+        issue_match = re.search(r"incident-(isd-\d{5})", channel_name.lower())
+        if not issue_match:
+            response_ts = post_message(channel_id, "Could not determine the Jira issue key from channel name.")
+            return response_ts
+        
+        issue_key = issue_match.group(1).upper()
+        print(f"Found issue key: {issue_key}")
+        
+        # Generate comprehensive summary including timeline
+        summary = generate_resolution_summary(channel_id, issue_key)
+        if not summary:
+            response_ts = post_message(channel_id, "Could not generate resolution summary.")
+            return response_ts
+        
+        # Post summary to Jira
+        jira_comment = post_resolution_to_jira(issue_key, summary)
+        if not jira_comment:
+            response_ts = post_message(channel_id, "Could not post resolution summary to Jira ticket.")
+            return response_ts
+        
+        # Generate resolution message
+        resolution_message = generate_resolution_message(issue_key)
+        
+        # Post resolution message
+        response_ts = post_message(channel_id, resolution_message)
+        return response_ts
+        
+    except Exception as e:
+        print(f"Error handling resolve command: {e}")
+        response_ts = post_message(channel_id, "Sorry, I encountered an error while resolving the incident.")
+        return response_ts
+
+def generate_resolution_summary(channel_id, issue_key):
+    """Generate a comprehensive resolution summary"""
+    try:
+        # Get channel info and history
+        channel_info = get_channel_info(channel_id)
+        if not channel_info:
+            return None
+        
+        created_timestamp = channel_info.get("created", 0)
+        messages = get_channel_history(channel_id, limit=1000)
+        if not messages:
+            return None
+        
+        # Generate timeline data
+        timeline_data = analyze_channel_timeline(messages, created_timestamp, channel_id)
+        
+        # Generate summary using AI
+        summary = generate_incident_resolution_summary(messages, timeline_data, issue_key)
+        
+        return summary
+        
+    except Exception as e:
+        print(f"Error generating resolution summary: {e}")
+        return None
+
+def generate_incident_resolution_summary(messages, timeline_data, issue_key):
+    """Generate an AI-powered resolution summary"""
+    try:
+        # Format messages for AI analysis
+        formatted_messages = []
+        for msg in messages:
+            user = msg.get("user", "Unknown")
+            text = msg.get("text", "")
+            timestamp = msg.get("ts", "")
+            
+            if timestamp:
+                time_str = datetime.datetime.fromtimestamp(float(timestamp)).strftime('%H:%M:%S')
+            else:
+                time_str = "Unknown"
+            
+            formatted_messages.append(f"[{time_str}] {user}: {text}")
+        
+        # Limit to last 50 messages to avoid token limits
+        recent_messages = formatted_messages[-50:]
+        messages_text = "\n".join(recent_messages)
+        
+        # Format timeline metrics
+        metrics = []
+        if timeline_data["first_response_time"]:
+            metrics.append(f"Time to First Response: {format_duration(timeline_data['first_response_time'])}")
+        if timeline_data["total_duration"]:
+            metrics.append(f"Total Resolution Time: {format_duration(timeline_data['total_duration'])}")
+        
+        metrics_text = "\n".join(metrics)
+        
+        prompt = f"""You are an incident management assistant. Generate a comprehensive resolution summary for this incident.
+
+Issue: {issue_key}
+
+Timeline Metrics:
+{metrics_text}
+
+Recent Channel Activity:
+{messages_text}
+
+Please provide a structured summary that includes:
+1. Root Cause: What was the underlying issue?
+2. Impact: Who was affected and how severely?
+3. Resolution: How was the issue resolved?
+4. Key Actions: What were the main steps taken?
+5. Timeline: Brief timeline of key events
+6. Participants: Who was involved in resolution
+7. Recommendations: Any follow-up actions needed
+
+Keep it professional and factual. Focus on the most important information for documentation."""
+
+        fallback_models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
+        models_to_try = [GEMINI_MODEL] + [m for m in fallback_models if m != GEMINI_MODEL]
+        
+        for model_name in models_to_try:
+            try:
+                print(f"Generating resolution summary with model: {model_name}")
+                model = genai.GenerativeModel(model_name)
+                response = model.generate_content(prompt)
+                
+                if hasattr(response, 'text') and response.text:
+                    print(f"Successfully generated resolution summary with model: {model_name}")
+                    return response.text.strip()
+                elif response.parts:
+                    summary_text = ''.join(part.text for part in response.parts if hasattr(part, 'text'))
+                    if summary_text:
+                        print(f"Successfully generated resolution summary with model: {model_name}")
+                        return summary_text.strip()
+                
+            except Exception as e:
+                print(f"Error with model {model_name}: {e}")
+                continue
+        
+        return "Could not generate resolution summary."
+        
+    except Exception as e:
+        print(f"Error generating resolution summary: {e}")
+        return None
+
+def post_resolution_to_jira(issue_key, summary):
+    """Post resolution summary to Jira ticket"""
+    try:
+        url = f"https://{JIRA_DOMAIN}/rest/api/3/issue/{issue_key}/comment"
+        
+        # Create the comment in Atlassian Document Format (ADF)
+        comment_body = {
+            "body": {
+                "version": 1,
+                "type": "doc",
+                "content": [
+                    {
+                        "type": "paragraph",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "🏁 Incident Resolution Summary\n\n"
+                            }
+                        ]
+                    },
+                    {
+                        "type": "paragraph",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": summary
+                            }
+                        ]
+                    }
+                ]
+            }
+        }
+        
+        response = requests.post(
+            url,
+            auth=(JIRA_USERNAME, JIRA_API_TOKEN),
+            headers={"Content-Type": "application/json"},
+            json=comment_body
+        )
+        
+        if response.status_code == 201:
+            print(f"Successfully posted resolution summary to Jira ticket {issue_key}")
+            return response.json()
+        else:
+            print(f"Failed to post resolution summary: {response.status_code} - {response.text}")
+            return None
+            
+    except Exception as e:
+        print(f"Error posting resolution to Jira: {e}")
+        return None
+
+def check_if_postmortem_needed(channel_id):
+    """Check if a post-mortem is needed based on incident duration and severity"""
+    try:
+        # Get channel info and history
+        channel_info = get_channel_info(channel_id)
+        if not channel_info:
+            return False
+        
+        created_timestamp = channel_info.get("created", 0)
+        messages = get_channel_history(channel_id)
+        if not messages:
+            return False
+        
+        # Generate timeline data
+        timeline_data = analyze_channel_timeline(messages, created_timestamp, channel_id)
+        
+        # Check duration - if over 2 hours, suggest post-mortem
+        if timeline_data["total_duration"]:
+            duration_hours = timeline_data["total_duration"].total_seconds() / 3600
+            if duration_hours >= 2:
+                return True
+        
+        # Check message volume - if high discussion volume, suggest post-mortem
+        if len(messages) > 100:  # Arbitrary threshold
+            return True
+        
+        # Check participant count - if many people involved, suggest post-mortem
+        if len(timeline_data["participants"]) > 5:  # Arbitrary threshold
+            return True
+        
+        return False
+        
+    except Exception as e:
+        print(f"Error checking if post-mortem needed: {e}")
+        return False
+
+def generate_resolution_message(issue_key):
+    """Generate the resolution message for Slack"""
+    message = [
+        f"✅ This incident has been marked as resolved.",
+        f"A comprehensive summary and timeline have been posted to the Jira ticket: <https://{JIRA_DOMAIN}/browse/{issue_key}|{issue_key}>",
+        "",
+        "🔍 **Post-Mortem Reminder**",
+        "If this incident requires a post-mortem, please remember to:",
+        "• Schedule a meeting with the relevant team members",
+        "• Document key findings and action items",
+        "• Update the ticket with post-mortem notes",
+        "",
+        "Thank you to everyone who helped resolve this incident! 🙌"
+    ]
+    
+    return "\n".join(message)

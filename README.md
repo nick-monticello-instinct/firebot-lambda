@@ -46,6 +46,7 @@ FireBot analyzes each ticket against 7 critical investigation items:
 - **Channel Summary**: `firebot summary` - Generate comprehensive incident summaries using AI
 - **Duration Tracking**: `firebot time` - Show how long the incident has been open
 - **Timeline Analysis**: `firebot timeline` - Generate detailed timeline with response metrics
+- **Resolution Handling**: `firebot resolve` - Mark incidents as resolved with automated Jira updates
 - **Smart Detection**: Only responds to commands in incident channels
 - **AI-Powered Analysis**: Uses Gemini to analyze channel history and provide insights
 
@@ -208,6 +209,7 @@ Once in an incident channel, users can interact with FireBot:
 firebot summary   # Generate comprehensive incident summary
 firebot time      # Show incident duration
 firebot timeline  # Generate detailed timeline with response metrics
+firebot resolve   # Mark incident as resolved and post summary to Jira
 /jsmops all schedules  # View the current on-call schedule 👥
 ```
 
