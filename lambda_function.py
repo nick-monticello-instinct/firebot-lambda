@@ -2379,6 +2379,7 @@ I'm FireBot, your AI-powered incident management assistant. Here's what I can he
 🤖 **AI Commands Available:**
 • `firebot summary` - Generate a comprehensive AI summary of the incident
 • `firebot time` - Show how long the incident has been open
+• `firebot timeline` - Generate a detailed timeline of events and response metrics
 
 📚 **Helpful Resources:**
 • <https://www.notion.so/instinctvet/Production-Support-Technical-How-Tos-d1c221f62ca64ce1ba76885fb8190aeb|Production Support Technical How-Tos> - Common troubleshooting steps and solutions
