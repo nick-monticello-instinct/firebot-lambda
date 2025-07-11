@@ -828,6 +828,9 @@ def process_fire_ticket(event_data, user_id):
             
         print(f"Successfully created channel: {channel_name} ({channel_id})")
         
+        # Update Jira ticket with Slack channel link
+        update_jira_with_slack_link(issue_key, channel_name, channel_id)
+        
         # Step 4: Post coordination message to claim ownership
         post_coordination_message(channel_id, issue_key)
         
@@ -2364,6 +2367,8 @@ def post_incident_channel_greeting(channel_id, issue_key):
     """Post a greeting message to the incident channel with AI command information"""
     greeting_text = f"""🚨 **Welcome to the incident channel for {issue_key}!**
 
+🔗 **Jira Ticket:** https://{JIRA_DOMAIN}/browse/{issue_key}
+
 I'm FireBot, your AI-powered incident management assistant. Here's what I can help you with:
 
 🤖 **AI Commands Available:**
@@ -2377,6 +2382,9 @@ I'm FireBot, your AI-powered incident management assistant. Here's what I can he
 • Analyzed the Jira ticket for missing investigation details
 • Uploaded any screenshots or media from the ticket
 • Reached out to the ticket creator for additional information
+• Paged the on-call engineer (they will be automatically escalated if no response)
+
+An engineer will be joining the channel shortly to help investigate and resolve this incident. Don't worry if you don't see them immediately - our escalation system ensures someone will respond.
 
 Just type one of the commands above to get started! I'm here to help make incident management more efficient. 🐾"""
 
@@ -2392,3 +2400,54 @@ Just type one of the commands above to get started! I'm here to help make incide
     ).json()
     if not response.get("ok"):
         print(f"Error posting incident channel greeting: {response.get('error')}")
+
+def update_jira_with_slack_link(issue_key, channel_name, channel_id):
+    """Updates the Jira ticket with a link to the Slack incident channel"""
+    try:
+        url = f"https://{JIRA_DOMAIN}/rest/api/3/issue/{issue_key}/comment"
+        
+        # Create the comment in Atlassian Document Format (ADF)
+        comment_body = {
+            "body": {
+                "version": 1,
+                "type": "doc",
+                "content": [
+                    {
+                        "type": "paragraph",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "🔗 Slack incident channel created: "
+                            },
+                            {
+                                "type": "text",
+                                "text": f"#{channel_name}",
+                                "marks": [
+                                    {
+                                        "type": "link",
+                                        "attrs": {
+                                            "href": f"slack://channel?team=T024F9QG2&id={channel_id}"
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            }
+        }
+        
+        response = requests.post(
+            url,
+            auth=(JIRA_USERNAME, JIRA_API_TOKEN),
+            headers={"Content-Type": "application/json"},
+            json=comment_body
+        )
+        
+        if response.status_code == 201:
+            print(f"Successfully added Slack channel link to Jira ticket {issue_key}")
+        else:
+            print(f"Failed to update Jira ticket with Slack link: {response.status_code} - {response.text}")
+            
+    except Exception as e:
+        print(f"Error updating Jira ticket with Slack link: {e}")
