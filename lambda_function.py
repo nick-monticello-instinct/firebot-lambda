@@ -2509,12 +2509,27 @@ def analyze_channel_timeline(messages, created_timestamp, channel_id):
         "key_events": [],
         "participants": set(),
         "bot_user_ids": [os.environ.get("SLACK_BOT_USER_ID"), "U09584DT15X"],
-        "first_engineer_response": None
+        "first_engineer_response": None,
+        "ticket_creator": None,
+        "first_engineer": None
     }
     
     # Track when users join
     joined_users = set()
     
+    # First pass: Find the ticket creator (first non-bot user to post)
+    for msg in messages:
+        user_id = msg.get("user", "")
+        if (user_id and 
+            user_id not in timeline_data["bot_user_ids"] and 
+            not msg.get("bot_id") and 
+            not msg.get("app_id")):
+            timeline_data["ticket_creator"] = user_id
+            break
+    
+    print(f"Identified ticket creator: {timeline_data['ticket_creator']}")
+    
+    # Second pass: Analyze timeline
     for msg in messages:
         timestamp = float(msg.get("ts", 0))
         msg_time = datetime.datetime.fromtimestamp(timestamp)
@@ -2545,22 +2560,38 @@ def analyze_channel_timeline(messages, created_timestamp, channel_id):
             # Get user info for better display
             user_info = get_user_info(user_id)
             display_name = user_info.get("real_name", user_id) if user_info else user_id
-            timeline_data["key_events"].append({
-                "time": msg_time,
-                "event": "User Joined",
-                "details": f"{display_name} joined the channel"
-            })
+            
+            # Distinguish between creator and engineer joins
+            if user_id == timeline_data["ticket_creator"]:
+                timeline_data["key_events"].append({
+                    "time": msg_time,
+                    "event": "Creator Joined",
+                    "details": f"Ticket creator {display_name} joined the channel"
+                })
+            else:
+                timeline_data["key_events"].append({
+                    "time": msg_time,
+                    "event": "Engineer Joined",
+                    "details": f"Engineer {display_name} joined the channel"
+                })
+                if not timeline_data["first_engineer"]:
+                    timeline_data["first_engineer"] = user_id
         
-        # Track first engineer response (any message from a non-bot user)
-        if not timeline_data["first_engineer_response"] and user_id not in timeline_data["bot_user_ids"]:
-            timeline_data["first_engineer_response"] = msg_time
-            user_info = get_user_info(user_id)
-            display_name = user_info.get("real_name", user_id) if user_info else user_id
-            timeline_data["key_events"].append({
-                "time": msg_time,
-                "event": "First Response",
-                "details": f"First response from {display_name}"
-            })
+        # Track first engineer response (first message from an engineer after they join)
+        if (not timeline_data["first_engineer_response"] and 
+            user_id not in timeline_data["bot_user_ids"] and
+            user_id != timeline_data["ticket_creator"]):
+            
+            # Only count as engineer response if they've joined the channel
+            if user_id in joined_users:
+                timeline_data["first_engineer_response"] = msg_time
+                user_info = get_user_info(user_id)
+                display_name = user_info.get("real_name", user_id) if user_info else user_id
+                timeline_data["key_events"].append({
+                    "time": msg_time,
+                    "event": "First Engineer Response",
+                    "details": f"First response from engineer {display_name}"
+                })
         
         # Track resolution indicators
         resolution_keywords = ["resolved", "fixed", "solution", "closing", "completed"]
@@ -2610,10 +2641,14 @@ def format_timeline_message(timeline_data, channel_name):
     # Format response metrics
     metrics = ["🕐 **Response Metrics:**"]
     if timeline_data["first_response_time"]:
-        metrics.append(f"• Time to First Response: {format_duration(timeline_data['first_response_time'])}")
+        metrics.append(f"• Time to First Engineer Response: {format_duration(timeline_data['first_response_time'])}")
     if timeline_data["total_duration"]:
         metrics.append(f"• Total Resolution Time: {format_duration(timeline_data['total_duration'])}")
     metrics.append(f"• Incident Start: {created_time.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+    
+    # Add note if no engineer response yet
+    if not timeline_data["first_response_time"]:
+        metrics.append("• ⚠️ No engineer response detected yet")
     
     # Format participants
     participants = []
