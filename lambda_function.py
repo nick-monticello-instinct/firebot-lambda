@@ -1709,13 +1709,6 @@ def parse_jira_ticket(ticket):
     # Get the standard summary field
     summary = fields.get("summary", "")
     
-    # Get language settings from custom field if needed
-    language_field = fields.get(JIRA_SUMMARY_FIELD, {})
-    if isinstance(language_field, dict):
-        language = language_field.get("displayName", "")
-        if language:
-            print(f"Ticket language: {language}")
-    
     # Handle Jira description which might be in ADF format
     description_field = fields.get("description", "")
     description = ""
