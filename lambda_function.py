@@ -569,16 +569,7 @@ def handle_firebot_summary(channel_id, user_id):
 
 ━━━━━━━━━━━ 🔍 DETAILS 🔍 ━━━━━━━━━━━
 
-{summary}
-
-━━━━━━━━━━━ 🤖 NEXT STEPS 🤖 ━━━━━━━━━━━
-
-Need more information? Try:
-• `firebot timeline` 📊 - For a detailed event timeline
-• `firebot time` ⏰ - To check incident duration
-• `firebot resolve` ✅ - When everything's fixed!
-
-Stay awesome! 🌟"""
+{summary}"""
         
         # Post the summary
         response_ts = post_message(channel_id, formatted_message)
