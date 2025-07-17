@@ -565,7 +565,7 @@ def handle_firebot_summary(channel_id, user_id):
         summary = generate_incident_summary(messages, channel_id)
         
         # Post the summary
-        response_ts = post_message(channel_id, f"📋 **Incident Summary**\n\n{summary}")
+        response_ts = post_message(channel_id, f"📋 Incident Summary\n\n{summary}")
         return response_ts
         
     except Exception as e:
@@ -684,20 +684,20 @@ Channel messages:
 
 Create a fun but professional summary with these sections (use emojis for each section!):
 
-1. 🎬 **Key Events and Timeline:**
-   Make it chronological and engaging! Use timestamps in EDT.
+🎬 Key Events and Timeline
+Make it chronological and engaging! Use timestamps in EDT.
 
-2. 👥 **The Dream Team:**
-   Who's involved and what are their roles? Make it personal!
+👥 The Dream Team
+Who's involved and what are their roles? Make it personal!
 
-3. 📊 **Current Status:**
-   Where do we stand? Keep it clear and upbeat!
+📊 Current Status
+Where do we stand? Keep it clear and upbeat!
 
-4. 🎯 **Key Actions Taken:**
-   What awesome steps has the team taken?
+🎯 Key Actions Taken
+What awesome steps has the team taken?
 
-5. ⏭️ **Next Steps:**
-   What's coming up next? Any pending items?
+⏭️ Next Steps
+What's coming up next? Any pending items?
 
 Keep it fun and engaging while maintaining professionalism. Use emojis strategically to highlight key points! Format in markdown with clear sections."""
 
@@ -2146,7 +2146,7 @@ def post_summary_message(channel_id, summary):
         headers=SLACK_HEADERS,
         json={
             "channel": channel_id,
-            "text": f"""🎯 **Incident Summary** 🎯
+            "text": f"""🎯 Incident Summary 🎯
 
 ━━━━━━━━━━━ 🔍 SUMMARY TIME! 🔍 ━━━━━━━━━━━
 
@@ -2457,14 +2457,14 @@ def post_incident_channel_greeting(channel_id, issue_key):
             ticket_info = parse_jira_ticket(jira_data.json())
         
         # Build ticket details section
-        ticket_details = f"🔗 **Jira Ticket:** <https://{JIRA_DOMAIN}/browse/{issue_key}|{issue_key}>"
+        ticket_details = f"🔗 Jira Ticket: <https://{JIRA_DOMAIN}/browse/{issue_key}|{issue_key}>"
         
         # Add affected hospitals/practices if available
         if ticket_info and ticket_info.get('hospitals'):
             hospitals_list = ", ".join(ticket_info['hospitals'])
-            ticket_details += f"\n🏥 **Affected Practice{'s' if len(ticket_info['hospitals']) > 1 else ''}:** {hospitals_list}"
+            ticket_details += f"\n🏥 Affected Practice{'s' if len(ticket_info['hospitals']) > 1 else ''}: {hospitals_list}"
     
-        greeting_text = f"""🚨 **Welcome to the incident channel for {issue_key}!** 🚨
+        greeting_text = f"""🚨 Welcome to the incident channel for {issue_key}! 🚨
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -2474,7 +2474,7 @@ I'm FireBot 🤖, your AI-powered incident management assistant. Here's what I c
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-🎯 **AI Commands Available:**
+🎯 AI Commands Available:
 • `firebot summary` 📋 - Generate a comprehensive AI summary of the incident
 • `firebot time` ⏰ - Show how long the incident has been open
 • `firebot timeline` 📊 - Generate a detailed timeline of events and response metrics
@@ -2482,7 +2482,7 @@ I'm FireBot 🤖, your AI-powered incident management assistant. Here's what I c
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-📚 **Helpful Resources:**
+📚 Helpful Resources:
 • 📖 <https://www.notion.so/instinctvet/Production-Support-Technical-How-Tos-d1c221f62ca64ce1ba76885fb8190aeb|Production Support Technical How-Tos> - Common troubleshooting steps
 • 🔄 <https://instinctual.instinctvet.com|Instinctual> - Access customer instances for testing
 • 📊 <https://app.datadoghq.com/logs|Datadog Logs> - View application and system logs
@@ -2604,7 +2604,8 @@ def analyze_channel_timeline(messages, created_timestamp, channel_id):
         "bot_user_ids": [os.environ.get("SLACK_BOT_USER_ID"), "U09584DT15X"],
         "first_engineer_response": None,
         "ticket_creator": None,
-        "first_engineer": None
+        "first_engineer": None,
+        "is_resolved": False
     }
     
     # Track when users join
@@ -2622,10 +2623,15 @@ def analyze_channel_timeline(messages, created_timestamp, channel_id):
     
     print(f"Identified ticket creator: {timeline_data['ticket_creator']}")
     
+    # Convert to Eastern Time
+    eastern_tz = datetime.timezone(datetime.timedelta(hours=-4))  # EDT, adjust for DST as needed
+    
     # Second pass: Analyze timeline
     for msg in messages:
         timestamp = float(msg.get("ts", 0))
-        msg_time = datetime.datetime.fromtimestamp(timestamp)
+        utc_time = datetime.datetime.fromtimestamp(timestamp)
+        eastern_time = utc_time.astimezone(eastern_tz)
+        msg_time = eastern_time
         user_id = msg.get("user", "")
         text = msg.get("text", "").lower()  # Convert to lowercase for easier matching
         original_text = msg.get("text", "")  # Keep original text for summaries
@@ -2637,22 +2643,23 @@ def analyze_channel_timeline(messages, created_timestamp, channel_id):
             if "incident channel created" in text:
                 timeline_data["key_events"].append({
                     "time": msg_time,
-                    "event": "Incident Channel Created",
-                    "details": "Bot created incident channel"
+                    "event": "Channel Created",
+                    "details": "🏗️ Incident channel created and initialized"
                 })
             elif "uploaded" in text and "media file" in text:
                 timeline_data["key_events"].append({
                     "time": msg_time,
-                    "event": "Media Uploaded",
-                    "details": "Screenshots/media files uploaded from Jira"
+                    "event": "Media Upload",
+                    "details": "📎 Screenshots/media files uploaded from Jira"
                 })
             # Add detection for resolution message from firebot resolve command
             elif "✅ this incident has been marked as resolved" in text:
                 timeline_data["resolution_time"] = msg_time
+                timeline_data["is_resolved"] = True
                 timeline_data["key_events"].append({
                     "time": msg_time,
                     "event": "Resolution",
-                    "details": "Incident marked as resolved via firebot resolve command"
+                    "details": "✅ Incident marked as resolved"
                 })
             continue
         
@@ -2668,64 +2675,75 @@ def analyze_channel_timeline(messages, created_timestamp, channel_id):
                 timeline_data["key_events"].append({
                     "time": msg_time,
                     "event": "Creator Joined",
-                    "details": f"Ticket creator {display_name} joined the channel"
+                    "details": f"👤 Ticket creator {display_name} joined"
                 })
             else:
                 timeline_data["key_events"].append({
                     "time": msg_time,
                     "event": "Engineer Joined",
-                    "details": f"Engineer {display_name} joined the channel"
+                    "details": f"👨‍💻 Engineer {display_name} joined"
                 })
                 if not timeline_data["first_engineer"]:
                     timeline_data["first_engineer"] = user_id
         
-        # Track first engineer response (first message from an engineer after they join)
-        if (not timeline_data["first_engineer_response"] and 
-            user_id not in timeline_data["bot_user_ids"] and
-            user_id != timeline_data["ticket_creator"]):
-            
-            # Only count as engineer response if they've joined the channel
-            if user_id in joined_users:
+        # Consider the ticket creator as an engineer if they're investigating/resolving
+        investigation_keywords = ["investigating", "checked", "found", "tested", "reproduced", "identified", "confirmed", "verified", "discovered", "restarted", "fixed", "resolved"]
+        if any(keyword in text for keyword in investigation_keywords):
+            if not timeline_data["first_engineer_response"]:
                 timeline_data["first_engineer_response"] = msg_time
-                user_info = get_user_info(user_id)
-                display_name = user_info.get("real_name", user_id) if user_info else user_id
-                # Include the actual response content
-                timeline_data["key_events"].append({
-                    "time": msg_time,
-                    "event": "First Engineer Response",
-                    "details": f"{display_name}: {original_text}"
-                })
+                timeline_data["first_engineer"] = user_id
         
         # Track resolution indicators
-        resolution_keywords = ["resolved", "fixed", "solution", "closing", "completed", "firebot resolve"]
+        resolution_keywords = ["resolved", "fixed", "solution", "closing", "completed", "firebot resolve", "working properly", "working now"]
         if any(keyword in text for keyword in resolution_keywords):
             timeline_data["resolution_time"] = msg_time
+            timeline_data["is_resolved"] = True
             user_info = get_user_info(user_id)
             display_name = user_info.get("real_name", user_id) if user_info else user_id
+            
+            # Summarize the resolution message
+            resolution_summary = "Issue resolved"
+            if "restarted" in text and "job" in text:
+                resolution_summary = "Restarted crashed job"
+            elif "fixed" in text:
+                resolution_summary = text.split("fixed")[1].strip()[:50] + "..."
+            
             timeline_data["key_events"].append({
                 "time": msg_time,
-                "event": "Resolution Update",
-                "details": f"{display_name}: {original_text}"
+                "event": "Resolution",
+                "details": f"✅ {resolution_summary} by {display_name}"
             })
         
         # Track investigation activities with content summary
-        investigation_keywords = ["investigating", "checked", "found", "tested", "reproduced", "identified", "confirmed", "verified", "discovered"]
-        if any(keyword in text for keyword in investigation_keywords):
+        elif any(keyword in text for keyword in investigation_keywords):
             user_info = get_user_info(user_id)
             display_name = user_info.get("real_name", user_id) if user_info else user_id
             
-            # Clean up the message for better readability
-            update_text = original_text
-            # Remove common Slack formatting
-            update_text = re.sub(r'<@[A-Z0-9]+>', '', update_text)  # Remove user mentions
-            update_text = re.sub(r'<#[A-Z0-9]+\|[^>]+>', '', update_text)  # Remove channel mentions
-            update_text = re.sub(r'<https?://[^>]+>', '', update_text)  # Remove links
-            update_text = update_text.strip()
+            # Summarize the investigation update
+            update_summary = original_text
+            if "found" in text:
+                found_index = text.find("found")
+                if found_index != -1:
+                    update_summary = "Found: " + text[found_index + 5:].strip()[:50] + "..."
+            elif "investigating" in text:
+                investigating_index = text.find("investigating")
+                if investigating_index != -1:
+                    update_summary = "Investigating: " + text[investigating_index + 12:].strip()[:50] + "..."
+            elif "checked" in text:
+                checked_index = text.find("checked")
+                if checked_index != -1:
+                    update_summary = "Checked: " + text[checked_index + 7:].strip()[:50] + "..."
+            
+            # Clean up the message
+            update_summary = re.sub(r'<@[A-Z0-9]+>', '', update_summary)  # Remove user mentions
+            update_summary = re.sub(r'<#[A-Z0-9]+\|[^>]+>', '', update_summary)  # Remove channel mentions
+            update_summary = re.sub(r'<https?://[^>]+>', '', update_summary)  # Remove links
+            update_summary = update_summary.strip()
             
             timeline_data["key_events"].append({
                 "time": msg_time,
-                "event": "Investigation Update",
-                "details": f"{display_name}: {update_text}"
+                "event": "Investigation",
+                "details": f"🔍 {update_summary}"
             })
         
         # Add to participants set
@@ -2745,21 +2763,36 @@ def analyze_channel_timeline(messages, created_timestamp, channel_id):
 
 def format_timeline_message(timeline_data, channel_name):
     """Format the timeline data into a readable message"""
-    created_time = timeline_data["created_time"]
+    # Convert to Eastern Time
+    eastern_tz = datetime.timezone(datetime.timedelta(hours=-4))  # EDT, adjust for DST as needed
+    created_time = timeline_data["created_time"].astimezone(eastern_tz)
     
     # Format header
-    header = f"📊 **Incident Timeline for #{channel_name}** 📊\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    header = f"📊 Incident Timeline for #{channel_name} 📊\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
     
     # Format response metrics
-    metrics = ["\n⏱️ **Response Metrics:**"]
-    if timeline_data["first_response_time"]:
-        metrics.append(f"• 🔄 Time to First Engineer Response: {format_duration(timeline_data['first_response_time'])}")
+    metrics = ["\n⏱️ Response Metrics:"]
+    
+    # Add resolution time if resolved
     if timeline_data["total_duration"]:
         metrics.append(f"• ⌛ Total Resolution Time: {format_duration(timeline_data['total_duration'])}")
-    metrics.append(f"• 📅 Incident Start: {created_time.strftime('%Y-%m-%d %H:%M:%S UTC')}")
     
-    # Add note if no engineer response yet
-    if not timeline_data["first_response_time"]:
+    # Add first response time if available
+    if timeline_data["first_response_time"]:
+        metrics.append(f"• 🔄 Time to First Response: {format_duration(timeline_data['first_response_time'])}")
+    
+    # Add incident start time
+    metrics.append(f"• 📅 Incident Start: {created_time.strftime('%I:%M:%S %p EDT')}")
+    
+    # Determine engineer status
+    if timeline_data["first_engineer_response"]:
+        if timeline_data["first_engineer"] == timeline_data["ticket_creator"]:
+            metrics.append("• 👨‍💻 Reporter acted as engineer and resolved the incident")
+        else:
+            metrics.append("• 👨‍💻 Engineer responded and resolved the incident")
+    elif timeline_data["is_resolved"]:
+        metrics.append("• 👨‍💻 Issue was resolved by the reporter")
+    else:
         metrics.append("• ⚠️ No engineer response detected yet")
     
     metrics.append("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
@@ -2769,34 +2802,26 @@ def format_timeline_message(timeline_data, channel_name):
     for user_id in timeline_data["participants"]:
         user_info = get_user_info(user_id)
         if user_info:
-            participants.append(user_info.get("real_name", user_id))
+            role = "👑 Reporter & Resolver" if user_id == timeline_data["ticket_creator"] and timeline_data["is_resolved"] else "👤 Reporter" if user_id == timeline_data["ticket_creator"] else "👨‍💻 Engineer"
+            participants.append(f"{role} {user_info.get('real_name', user_id)}")
         else:
-            participants.append(user_id)
+            participants.append(f"👤 {user_id}")
     
-    participant_section = "\n\n👥 **Participants:**\n• 👤 " + "\n• 👤 ".join(participants)
+    participant_section = "\n\n👥 Team Members:\n• " + "\n• ".join(participants)
     participant_section += "\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     
     # Format timeline events
-    timeline_events = ["\n\n⏰ **Event Timeline:**"]
+    timeline_events = ["\n\n⏰ Event Timeline:"]
     sorted_events = sorted(timeline_data["key_events"], key=lambda x: x["time"])
     
     for event in sorted_events:
-        time_str = event["time"].strftime("%H:%M:%S UTC")
-        # Add emoji based on event type
-        emoji = "🔵"  # Default
-        if "joined" in event["event"].lower():
-            emoji = "➡️"
-        elif "created" in event["event"].lower():
-            emoji = "🆕"
-        elif "uploaded" in event["event"].lower():
-            emoji = "📎"
-        elif "response" in event["event"].lower():
-            emoji = "💬"
-        elif "resolution" in event["event"].lower():
-            emoji = "✅"
-        elif "investigation" in event["event"].lower():
-            emoji = "🔍"
-        timeline_events.append(f"• {emoji} {time_str} - {event['event']}: {event['details']}")
+        time_str = event["time"].strftime("%I:%M:%S %p EDT")
+        timeline_events.append(f"• {time_str} - {event['details']}")
+    
+    # Add resolution status if resolved
+    if timeline_data["is_resolved"]:
+        resolution_time = timeline_data["resolution_time"].astimezone(eastern_tz)
+        timeline_events.append(f"\n🎉 Incident resolved at {resolution_time.strftime('%I:%M:%S %p EDT')} (total time: {format_duration(timeline_data['total_duration'])})")
     
     # Combine all sections
     message = "\n".join([
@@ -3114,7 +3139,7 @@ def generate_resolution_message(issue_key, channel_id):
                 f"✅ This incident has been marked as resolved.",
                 f"A comprehensive summary and timeline have been posted to the Jira ticket: <https://{JIRA_DOMAIN}/browse/{issue_key}|{issue_key}>",
                 "",
-                "🔍 **Post-Mortem Reminder**",
+                "🔍 Post-Mortem Reminder",
                 "If this incident requires a post-mortem, please remember to:",
                 "• Schedule a meeting with the relevant team members",
                 "• Document key findings and action items",
@@ -3136,7 +3161,7 @@ def generate_resolution_message(issue_key, channel_id):
                 f"⏱️ Total resolution time: {duration_str}",
                 f"A comprehensive summary and timeline have been posted to the Jira ticket: <https://{JIRA_DOMAIN}/browse/{issue_key}|{issue_key}>",
                 "",
-                "🔍 **Post-Mortem Reminder**",
+                "🔍 Post-Mortem Reminder",
                 "If this incident requires a post-mortem, please remember to:",
                 "• Schedule a meeting with the relevant team members",
                 "• Document key findings and action items",
@@ -3149,7 +3174,7 @@ def generate_resolution_message(issue_key, channel_id):
                 f"✅ This incident has been marked as resolved.",
                 f"A comprehensive summary and timeline have been posted to the Jira ticket: <https://{JIRA_DOMAIN}/browse/{issue_key}|{issue_key}>",
                 "",
-                "🔍 **Post-Mortem Reminder**",
+                "🔍 Post-Mortem Reminder",
                 "If this incident requires a post-mortem, please remember to:",
                 "• Schedule a meeting with the relevant team members",
                 "• Document key findings and action items",
