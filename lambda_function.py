@@ -1361,15 +1361,15 @@ Summary: {parsed_data['summary']}
 
 Description: {parsed_data['description']}
 
-Please analyze this ticket and determine if it contains information about each of these 7 critical investigation items. For each item, respond with either "FOUND" or "MISSING" followed by a brief explanation.
+Please analyze this ticket and determine if it contains information about each of these 7 critical investigation items. For each item, respond with either "FOUND" or "MISSING" followed by a brief explanation. Pay special attention to information already provided in the description - don't ask for information that's already clearly stated.
 
 INVESTIGATION CHECKLIST:
-1. Issue replication in customer's application - Has the reporter confirmed they can reproduce this issue in their own application?
+1. Issue replication in customer's application - Has the reporter confirmed they can reproduce this issue in their own application? Look for statements about current impact.
 2. Issue replication on Demo instance - Has anyone tested this on our Demo/staging environment?
 3. Steps to reproduce - Are clear, step-by-step reproduction instructions provided?
 4. Screenshots provided - Are screenshots or visual evidence included? (We found {len(attachments)} media files)
-5. Problem start time - When did this issue first start occurring for the customer?
-6. Practice-wide impact - Is this affecting the entire practice/all users, or just specific users?
+5. Problem start time - When did this issue first start occurring for the customer? Look for any timing information in the description.
+6. Practice-wide impact - Is this affecting the entire practice/all users, or just specific users? Look for statements about scope of impact.
 7. Multi-practice impact - Are other veterinary practices experiencing this same issue?
 
 For each item, respond in this exact format:
@@ -1381,7 +1381,7 @@ For each item, respond in this exact format:
 6. [FOUND/MISSING]: Brief explanation
 7. [FOUND/MISSING]: Brief explanation
 
-Be thorough but concise in your analysis."""
+Be thorough but concise in your analysis. If information is clearly stated in the description, mark it as FOUND and quote the relevant text."""
 
         fallback_models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
         models_to_try = [GEMINI_MODEL] + [m for m in fallback_models if m != GEMINI_MODEL]
@@ -1482,7 +1482,8 @@ Create a supportive message that:
 5. Emphasizes we're working together to help veterinary practices
 
 Use bullet points for the requests and keep the tone encouraging. Make each request specific and actionable. Don't use the reporter's name since we'll mention them separately.
-Base your requests on the context from both the summary and description."""
+Base your requests on the context from both the summary and description.
+Keep it direct and concise - no formal closings like 'Best Regards' or 'Thanks again'."""
 
         fallback_models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
         models_to_try = [GEMINI_MODEL] + [m for m in fallback_models if m != GEMINI_MODEL]
@@ -1519,9 +1520,7 @@ def generate_fallback_missing_items_message(missing_items):
     
     return f"""Thanks for reporting this issue! To help our development team investigate more efficiently, could you please provide some additional details:
 
-{items_list}
-
-This information will help us resolve the issue faster. Thanks for your collaboration! 🐾"""
+{items_list}"""
 
 def find_slack_user_by_email(email):
     """Find Slack user ID by email address"""
@@ -1589,7 +1588,7 @@ def generate_combined_incident_message(creator_info, checklist_results, issue_ke
         
         if not missing_items:
             # All investigation items are present
-            return f"{user_mention} **Incident Summary:** {incident_summary}\n\nThanks for reporting incident {issue_key}! 🎉 You did fantastic work providing all the key investigation details we need. A developer is on the way to help resolve this. The comprehensive information you provided will help us investigate this efficiently!"
+            return f"{user_mention} **Incident Summary:** {incident_summary}\n\nThanks for reporting incident {issue_key}! 🎉 You did fantastic work providing all the key investigation details we need. A developer is on the way to help resolve this."
         
         # Generate specific requests for missing items
         missing_items_request = generate_missing_items_requests(missing_items, issue_key, parsed_data)
@@ -1630,8 +1629,10 @@ Create a message that:
 5. Maintains an encouraging, collaborative tone
 6. Keeps it concise and well-organized
 
-Don't include the person's name at the beginning since it will be mentioned separately. Use friendly but professional language.
-Base your response on both the summary and description context."""
+Don't include the person's name at the beginning since it will be mentioned separately.
+Use friendly but professional language.
+Base your response on both the summary and description context.
+Keep it direct and concise - no formal closings like 'Best Regards' or 'Thanks again'."""
 
         fallback_models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
         models_to_try = [GEMINI_MODEL] + [m for m in fallback_models if m != GEMINI_MODEL]
