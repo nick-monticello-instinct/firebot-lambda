@@ -654,16 +654,20 @@ def generate_incident_summary(messages, channel_id):
         # Format messages for AI analysis
         formatted_messages = []
         for msg in messages:
-            user = msg.get("user", "Unknown")
+            user_id = msg.get("user", "Unknown")
             text = msg.get("text", "")
             timestamp = msg.get("ts", "")
+            
+            # Look up user info for proper display name
+            user_info = get_user_info(user_id)
+            display_name = user_info.get("real_name", user_id) if user_info else user_id
             
             if timestamp:
                 time_str = datetime.datetime.fromtimestamp(float(timestamp)).strftime('%H:%M:%S')
             else:
                 time_str = "Unknown"
             
-            formatted_messages.append(f"[{time_str}] {user}: {text}")
+            formatted_messages.append(f"[{time_str}] {display_name}: {text}")
         
         # Limit to last 50 messages to avoid token limits
         recent_messages = formatted_messages[:50]
@@ -706,7 +710,7 @@ Keep it concise but comprehensive. Focus on the most important information for i
                 print(f"Error with model {model_name}: {e}")
                 continue
         
-        return "Could not generate summary due to technical issues."
+        return "Could not generate summary."
         
     except Exception as e:
         print(f"Error generating incident summary: {e}")
@@ -2781,13 +2785,13 @@ def handle_firebot_resolve(channel_id, user_id):
             return response_ts
         
         # Post summary to Jira
-        jira_comment = post_resolution_to_jira(issue_key, summary)
+        jira_comment = post_resolution_to_jira(issue_key, summary, channel_id)
         if not jira_comment:
             response_ts = post_message(channel_id, "Could not post resolution summary to Jira ticket.")
             return response_ts
         
         # Generate resolution message
-        resolution_message = generate_resolution_message(issue_key)
+        resolution_message = generate_resolution_message(issue_key, channel_id)
         
         # Post resolution message
         response_ts = post_message(channel_id, resolution_message)
@@ -2829,16 +2833,20 @@ def generate_incident_resolution_summary(messages, timeline_data, issue_key):
         # Format messages for AI analysis
         formatted_messages = []
         for msg in messages:
-            user = msg.get("user", "Unknown")
+            user_id = msg.get("user", "Unknown")
             text = msg.get("text", "")
             timestamp = msg.get("ts", "")
+            
+            # Look up user info for proper display name
+            user_info = get_user_info(user_id)
+            display_name = user_info.get("real_name", user_id) if user_info else user_id
             
             if timestamp:
                 time_str = datetime.datetime.fromtimestamp(float(timestamp)).strftime('%H:%M:%S')
             else:
                 time_str = "Unknown"
             
-            formatted_messages.append(f"[{time_str}] {user}: {text}")
+            formatted_messages.append(f"[{time_str}] {display_name}: {text}")
         
         # Limit to last 50 messages to avoid token limits
         recent_messages = formatted_messages[-50:]
@@ -2902,10 +2910,21 @@ Keep it professional and factual. Focus on the most important information for do
         print(f"Error generating resolution summary: {e}")
         return None
 
-def post_resolution_to_jira(issue_key, summary):
+def post_resolution_to_jira(issue_key, summary, channel_id):
     """Post resolution summary to Jira ticket"""
     try:
         url = f"https://{JIRA_DOMAIN}/rest/api/3/issue/{issue_key}/comment"
+        
+        # Get channel info to calculate total duration
+        channel_info = get_channel_info(channel_id)
+        duration_text = ""
+        if channel_info:
+            created_ts = float(channel_info.get("created", 0))
+            if created_ts > 0:
+                created_time = datetime.datetime.fromtimestamp(created_ts)
+                resolution_time = datetime.datetime.now()
+                total_duration = resolution_time - created_time
+                duration_text = f"\n\n⏱️ Total Resolution Time: {format_duration(total_duration)}"
         
         # Create the comment in Atlassian Document Format (ADF)
         comment_body = {
@@ -2927,7 +2946,7 @@ def post_resolution_to_jira(issue_key, summary):
                         "content": [
                             {
                                 "type": "text",
-                                "text": summary
+                                "text": summary + duration_text
                             }
                         ]
                     }
@@ -2989,19 +3008,67 @@ def check_if_postmortem_needed(channel_id):
         print(f"Error checking if post-mortem needed: {e}")
         return False
 
-def generate_resolution_message(issue_key):
+def generate_resolution_message(issue_key, channel_id):
     """Generate the resolution message for Slack"""
-    message = [
-        f"✅ This incident has been marked as resolved.",
-        f"A comprehensive summary and timeline have been posted to the Jira ticket: <https://{JIRA_DOMAIN}/browse/{issue_key}|{issue_key}>",
-        "",
-        "🔍 **Post-Mortem Reminder**",
-        "If this incident requires a post-mortem, please remember to:",
-        "• Schedule a meeting with the relevant team members",
-        "• Document key findings and action items",
-        "• Update the ticket with post-mortem notes",
-        "",
-        "Thank you to everyone who helped resolve this incident! 🙌"
-    ]
-    
-    return "\n".join(message)
+    try:
+        # Get channel info to extract creation time
+        channel_info = get_channel_info(channel_id)
+        if not channel_info:
+            return "\n".join([
+                f"✅ This incident has been marked as resolved.",
+                f"A comprehensive summary and timeline have been posted to the Jira ticket: <https://{JIRA_DOMAIN}/browse/{issue_key}|{issue_key}>",
+                "",
+                "🔍 **Post-Mortem Reminder**",
+                "If this incident requires a post-mortem, please remember to:",
+                "• Schedule a meeting with the relevant team members",
+                "• Document key findings and action items",
+                "• Update the ticket with post-mortem notes",
+                "",
+                "Thank you to everyone who helped resolve this incident! 🙌"
+            ])
+
+        # Calculate total duration
+        created_ts = float(channel_info.get("created", 0))
+        if created_ts > 0:
+            created_time = datetime.datetime.fromtimestamp(created_ts)
+            resolution_time = datetime.datetime.now()
+            total_duration = resolution_time - created_time
+            duration_str = format_duration(total_duration)
+            
+            message = [
+                f"✅ This incident has been marked as resolved.",
+                f"⏱️ Total resolution time: {duration_str}",
+                f"A comprehensive summary and timeline have been posted to the Jira ticket: <https://{JIRA_DOMAIN}/browse/{issue_key}|{issue_key}>",
+                "",
+                "🔍 **Post-Mortem Reminder**",
+                "If this incident requires a post-mortem, please remember to:",
+                "• Schedule a meeting with the relevant team members",
+                "• Document key findings and action items",
+                "• Update the ticket with post-mortem notes",
+                "",
+                "Thank you to everyone who helped resolve this incident! 🙌"
+            ]
+        else:
+            message = [
+                f"✅ This incident has been marked as resolved.",
+                f"A comprehensive summary and timeline have been posted to the Jira ticket: <https://{JIRA_DOMAIN}/browse/{issue_key}|{issue_key}>",
+                "",
+                "🔍 **Post-Mortem Reminder**",
+                "If this incident requires a post-mortem, please remember to:",
+                "• Schedule a meeting with the relevant team members",
+                "• Document key findings and action items",
+                "• Update the ticket with post-mortem notes",
+                "",
+                "Thank you to everyone who helped resolve this incident! 🙌"
+            ]
+        
+        return "\n".join(message)
+    except Exception as e:
+        print(f"Error generating resolution message: {e}")
+        # Fallback to basic message
+        return "\n".join([
+            f"✅ This incident has been marked as resolved.",
+            f"A comprehensive summary and timeline have been posted to the Jira ticket: <https://{JIRA_DOMAIN}/browse/{issue_key}|{issue_key}>",
+            "",
+            "Thank you to everyone who helped resolve this incident! 🙌"
+        ])
