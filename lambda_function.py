@@ -650,8 +650,10 @@ def get_channel_info(channel_id):
 def generate_incident_summary(messages, channel_id):
     """Generate a comprehensive summary of the incident using AI"""
     try:
-        # Format messages for AI analysis
+        # Format messages for AI analysis with Eastern time
         formatted_messages = []
+        eastern_tz = datetime.timezone(datetime.timedelta(hours=-4))  # EDT, adjust for DST as needed
+        
         for msg in messages:
             user_id = msg.get("user", "Unknown")
             text = msg.get("text", "")
@@ -662,7 +664,9 @@ def generate_incident_summary(messages, channel_id):
             display_name = user_info.get("real_name", user_id) if user_info else user_id
             
             if timestamp:
-                time_str = datetime.datetime.fromtimestamp(float(timestamp)).strftime('%H:%M:%S')
+                utc_time = datetime.datetime.fromtimestamp(float(timestamp))
+                eastern_time = utc_time.astimezone(eastern_tz)
+                time_str = eastern_time.strftime('%I:%M:%S %p EDT')
             else:
                 time_str = "Unknown"
             
@@ -672,20 +676,30 @@ def generate_incident_summary(messages, channel_id):
         recent_messages = formatted_messages[:50]
         messages_text = "\n".join(recent_messages)
         
-        # Generate summary using AI
-        prompt = f"""You are an incident response assistant. Analyze this Slack conversation from an incident channel and provide a comprehensive summary.
+        # Generate summary using AI with a more fun prompt
+        prompt = f"""You are FireBot 🤖, a fun and helpful incident response assistant! Analyze this Slack conversation and create an engaging summary.
 
 Channel messages:
 {messages_text}
 
-Please provide a structured summary that includes:
-1. Key events and timeline
-2. People involved and their roles
-3. Current status and progress
-4. Important decisions or actions taken
-5. Next steps or pending items
+Create a fun but professional summary with these sections (use emojis for each section!):
 
-Keep it concise but comprehensive. Focus on the most important information for incident management."""
+1. 🎬 **Key Events and Timeline:**
+   Make it chronological and engaging! Use timestamps in EDT.
+
+2. 👥 **The Dream Team:**
+   Who's involved and what are their roles? Make it personal!
+
+3. 📊 **Current Status:**
+   Where do we stand? Keep it clear and upbeat!
+
+4. 🎯 **Key Actions Taken:**
+   What awesome steps has the team taken?
+
+5. ⏭️ **Next Steps:**
+   What's coming up next? Any pending items?
+
+Keep it fun and engaging while maintaining professionalism. Use emojis strategically to highlight key points! Format in markdown with clear sections."""
 
         fallback_models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
         models_to_try = [GEMINI_MODEL] + [m for m in fallback_models if m != GEMINI_MODEL]
@@ -2126,16 +2140,26 @@ I'll help coordinate the incident response there! 🤖"""
         print(f"Error posting welcome message: {response.get('error')}")
 
 def post_summary_message(channel_id, summary):
+    """Post a fun and visually appealing summary message"""
     response = requests.post(
         "https://slack.com/api/chat.postMessage",
         headers=SLACK_HEADERS,
         json={
             "channel": channel_id,
-            "text": f"""📋 **Incident Summary** 📋
+            "text": f"""🎯 **Incident Summary** 🎯
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━ 🔍 SUMMARY TIME! 🔍 ━━━━━━━━━━━
 
-{summary}"""
+{summary}
+
+━━━━━━━━━━━ 🤖 END SUMMARY 🤖 ━━━━━━━━━━━
+
+Need more details? Try:
+• `firebot timeline` 📊 - For a detailed event timeline
+• `firebot time` ⏰ - To check incident duration
+• `firebot resolve` ✅ - When everything's fixed!
+
+Stay awesome! 🌟"""
         }
     ).json()
     if not response.get("ok"):
@@ -2603,23 +2627,32 @@ def analyze_channel_timeline(messages, created_timestamp, channel_id):
         timestamp = float(msg.get("ts", 0))
         msg_time = datetime.datetime.fromtimestamp(timestamp)
         user_id = msg.get("user", "")
-        text = msg.get("text", "")
+        text = msg.get("text", "").lower()  # Convert to lowercase for easier matching
+        original_text = msg.get("text", "")  # Keep original text for summaries
         subtype = msg.get("subtype", "")
         
         # Skip bot messages for participant tracking
         if user_id in timeline_data["bot_user_ids"] or msg.get("bot_id") or msg.get("app_id"):
             # But still analyze bot messages for key events
-            if "incident channel created" in text.lower():
+            if "incident channel created" in text:
                 timeline_data["key_events"].append({
                     "time": msg_time,
                     "event": "Incident Channel Created",
                     "details": "Bot created incident channel"
                 })
-            elif "uploaded" in text.lower() and "media file" in text.lower():
+            elif "uploaded" in text and "media file" in text:
                 timeline_data["key_events"].append({
                     "time": msg_time,
                     "event": "Media Uploaded",
                     "details": "Screenshots/media files uploaded from Jira"
+                })
+            # Add detection for resolution message from firebot resolve command
+            elif "✅ this incident has been marked as resolved" in text:
+                timeline_data["resolution_time"] = msg_time
+                timeline_data["key_events"].append({
+                    "time": msg_time,
+                    "event": "Resolution",
+                    "details": "Incident marked as resolved via firebot resolve command"
                 })
             continue
         
@@ -2656,33 +2689,43 @@ def analyze_channel_timeline(messages, created_timestamp, channel_id):
                 timeline_data["first_engineer_response"] = msg_time
                 user_info = get_user_info(user_id)
                 display_name = user_info.get("real_name", user_id) if user_info else user_id
+                # Include the actual response content
                 timeline_data["key_events"].append({
                     "time": msg_time,
                     "event": "First Engineer Response",
-                    "details": f"First response from engineer {display_name}"
+                    "details": f"{display_name}: {original_text}"
                 })
         
         # Track resolution indicators
-        resolution_keywords = ["resolved", "fixed", "solution", "closing", "completed"]
-        if any(keyword in text.lower() for keyword in resolution_keywords):
+        resolution_keywords = ["resolved", "fixed", "solution", "closing", "completed", "firebot resolve"]
+        if any(keyword in text for keyword in resolution_keywords):
             timeline_data["resolution_time"] = msg_time
             user_info = get_user_info(user_id)
             display_name = user_info.get("real_name", user_id) if user_info else user_id
             timeline_data["key_events"].append({
                 "time": msg_time,
-                "event": "Resolution",
-                "details": f"Resolution indicated by {display_name}"
+                "event": "Resolution Update",
+                "details": f"{display_name}: {original_text}"
             })
         
-        # Track investigation activities
-        investigation_keywords = ["investigating", "checked", "found", "tested", "reproduced", "identified"]
-        if any(keyword in text.lower() for keyword in investigation_keywords):
+        # Track investigation activities with content summary
+        investigation_keywords = ["investigating", "checked", "found", "tested", "reproduced", "identified", "confirmed", "verified", "discovered"]
+        if any(keyword in text for keyword in investigation_keywords):
             user_info = get_user_info(user_id)
             display_name = user_info.get("real_name", user_id) if user_info else user_id
+            
+            # Clean up the message for better readability
+            update_text = original_text
+            # Remove common Slack formatting
+            update_text = re.sub(r'<@[A-Z0-9]+>', '', update_text)  # Remove user mentions
+            update_text = re.sub(r'<#[A-Z0-9]+\|[^>]+>', '', update_text)  # Remove channel mentions
+            update_text = re.sub(r'<https?://[^>]+>', '', update_text)  # Remove links
+            update_text = update_text.strip()
+            
             timeline_data["key_events"].append({
                 "time": msg_time,
-                "event": "Investigation",
-                "details": f"Investigation update from {display_name}"
+                "event": "Investigation Update",
+                "details": f"{display_name}: {update_text}"
             })
         
         # Add to participants set
