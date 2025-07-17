@@ -45,7 +45,6 @@ if GEMINI_MODEL in MODEL_MAPPING:
     print(f"Mapped model to: {GEMINI_MODEL}")
 
 JIRA_HOSPITAL_FIELD = os.environ.get("JIRA_HOSPITAL_FIELD", "customfield_10297")
-JIRA_SUMMARY_FIELD = "customfield_10250"
 
 # DynamoDB configuration
 DYNAMODB_TABLE_NAME = os.environ.get("DYNAMODB_TABLE_NAME", "firebot-coordination")
@@ -1470,6 +1469,7 @@ def generate_missing_items_requests(missing_items, issue_key, parsed_data):
 
 INCIDENT: {issue_key}
 SUMMARY: {parsed_data.get('summary', '')[:200]}
+DESCRIPTION: {parsed_data.get('description', '')[:500]}...
 
 MISSING ITEMS:
 {missing_items_text}
@@ -1481,7 +1481,8 @@ Create a supportive message that:
 4. Uses a collaborative, helpful tone
 5. Emphasizes we're working together to help veterinary practices
 
-Use bullet points for the requests and keep the tone encouraging. Make each request specific and actionable. Don't use the reporter's name since we'll mention them separately."""
+Use bullet points for the requests and keep the tone encouraging. Make each request specific and actionable. Don't use the reporter's name since we'll mention them separately.
+Base your requests on the context from both the summary and description."""
 
         fallback_models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
         models_to_try = [GEMINI_MODEL] + [m for m in fallback_models if m != GEMINI_MODEL]
@@ -1559,14 +1560,19 @@ def generate_combined_incident_message(creator_info, checklist_results, issue_ke
         
         user_mention = f"<@{slack_user_id}>" if slack_user_id else creator_name
         
-        # Safely get incident summary
+        # Safely get incident summary and description
         incident_summary = ""
-        if parsed_data and parsed_data.get('summary'):
+        incident_description = ""
+        if parsed_data:
             try:
                 summary_text = str(parsed_data.get('summary', ''))
                 incident_summary = summary_text[:200] + ('...' if len(summary_text) > 200 else '')
+                
+                description_text = str(parsed_data.get('description', ''))
+                incident_description = description_text[:500] + ('...' if len(description_text) > 500 else '')
             except (TypeError, AttributeError):
                 incident_summary = "Issue details available in ticket"
+                incident_description = ""
         
         # Safely extract checklist results
         missing_items = []
@@ -1608,6 +1614,7 @@ def generate_combined_incident_message(creator_info, checklist_results, issue_ke
 
 INCIDENT: {issue_key}
 SUMMARY: {incident_summary}
+DESCRIPTION: {incident_description}
 CREATOR: {creator_name}
 
 FOUND ITEMS ({len(found_items)}): {found_items_summary}
@@ -1623,7 +1630,8 @@ Create a message that:
 5. Maintains an encouraging, collaborative tone
 6. Keeps it concise and well-organized
 
-Don't include the person's name at the beginning since it will be mentioned separately. Use friendly but professional language."""
+Don't include the person's name at the beginning since it will be mentioned separately. Use friendly but professional language.
+Base your response on both the summary and description context."""
 
         fallback_models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
         models_to_try = [GEMINI_MODEL] + [m for m in fallback_models if m != GEMINI_MODEL]
@@ -1697,7 +1705,16 @@ def fetch_jira_data(issue_key):
 
 def parse_jira_ticket(ticket):
     fields = ticket.get("fields", {})
-    summary = fields.get(JIRA_SUMMARY_FIELD, "")
+    
+    # Get the standard summary field
+    summary = fields.get("summary", "")
+    
+    # Get language settings from custom field if needed
+    language_field = fields.get(JIRA_SUMMARY_FIELD, {})
+    if isinstance(language_field, dict):
+        language = language_field.get("displayName", "")
+        if language:
+            print(f"Ticket language: {language}")
     
     # Handle Jira description which might be in ADF format
     description_field = fields.get("description", "")
@@ -1710,7 +1727,14 @@ def parse_jira_ticket(ticket):
         # Plain text
         description = description_field
     
-    return {"summary": summary, "description": description}
+    # Get hospital/practice info
+    hospitals = fields.get("customfield_10348", [])
+    
+    return {
+        "summary": summary,
+        "description": description,
+        "hospitals": hospitals
+    }
 
 def extract_text_from_adf(adf_content):
     """Extract plain text from Atlassian Document Format (ADF)"""
@@ -2400,11 +2424,28 @@ def is_our_command_response(event_data):
 
 def post_incident_channel_greeting(channel_id, issue_key):
     """Post a greeting message to the incident channel with AI command information"""
-    greeting_text = f"""🚨 **Welcome to the incident channel for {issue_key}!** 🚨
+    try:
+        # Fetch latest ticket data
+        jira_data = fetch_jira_data(issue_key)
+        if jira_data.status_code != 200:
+            print(f"Warning: Could not fetch latest ticket data for greeting: {jira_data.text}")
+            ticket_info = None
+        else:
+            ticket_info = parse_jira_ticket(jira_data.json())
+        
+        # Build ticket details section
+        ticket_details = f"🔗 **Jira Ticket:** <https://{JIRA_DOMAIN}/browse/{issue_key}|{issue_key}>"
+        
+        # Add affected hospitals/practices if available
+        if ticket_info and ticket_info.get('hospitals'):
+            hospitals_list = ", ".join(ticket_info['hospitals'])
+            ticket_details += f"\n🏥 **Affected Practice{'s' if len(ticket_info['hospitals']) > 1 else ''}:** {hospitals_list}"
+    
+        greeting_text = f"""🚨 **Welcome to the incident channel for {issue_key}!** 🚨
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-🔗 **Jira Ticket:** <https://{JIRA_DOMAIN}/browse/{issue_key}|{issue_key}>
+{ticket_details}
 
 I'm FireBot 🤖, your AI-powered incident management assistant. Here's what I can help you with:
 
@@ -2438,18 +2479,44 @@ I'm FireBot 🤖, your AI-powered incident management assistant. Here's what I c
 
 Just type one of the commands above to get started! I'm here to help make incident management more efficient. 🐾"""
 
-    response = requests.post(
-        "https://slack.com/api/chat.postMessage",
-        headers=SLACK_HEADERS,
-        json={
-            "channel": channel_id,
-            "text": greeting_text,
-            "unfurl_links": False,
-            "unfurl_media": False
-        }
-    ).json()
-    if not response.get("ok"):
-        print(f"Error posting incident channel greeting: {response.get('error')}")
+        response = requests.post(
+            "https://slack.com/api/chat.postMessage",
+            headers=SLACK_HEADERS,
+            json={
+                "channel": channel_id,
+                "text": greeting_text,
+                "unfurl_links": False,
+                "unfurl_media": False
+            }
+        ).json()
+        if not response.get("ok"):
+            print(f"Error posting incident channel greeting: {response.get('error')}")
+            
+    except Exception as e:
+        print(f"Error posting incident channel greeting: {e}")
+        # Post a simplified greeting if we hit any errors
+        fallback_greeting = f"""🚨 **Welcome to the incident channel for {issue_key}!** 🚨
+
+I'm FireBot 🤖, your AI-powered incident management assistant.
+
+Available commands:
+• `firebot summary` - Generate incident summary
+• `firebot time` - Show incident duration
+• `firebot timeline` - Show event timeline
+• `firebot resolve` - Mark as resolved
+
+An engineer will be joining shortly to help investigate and resolve this incident."""
+        
+        requests.post(
+            "https://slack.com/api/chat.postMessage",
+            headers=SLACK_HEADERS,
+            json={
+                "channel": channel_id,
+                "text": fallback_greeting,
+                "unfurl_links": False,
+                "unfurl_media": False
+            }
+        )
 
 def update_jira_with_slack_link(issue_key, channel_name, channel_id):
     """Updates the Jira ticket with a link to the Slack incident channel"""
