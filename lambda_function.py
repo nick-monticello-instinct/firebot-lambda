@@ -732,18 +732,22 @@ def format_duration(duration):
 
 def post_firebot_help(channel_id):
     """Post help information for firebot commands"""
-    help_text = """🤖 **FireBot Commands**
+    help_text = """🤖 **FireBot Commands** 🤖
 
-Available commands:
-• `firebot summary` - Generate a comprehensive summary of the incident
-• `firebot time` - Show how long the incident has been open
-• `firebot timeline` - Generate a detailed timeline of events and response metrics
-• `firebot resolve` - Mark incident as resolved and post summary to Jira ticket
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Additional Useful Commands:
-• `/jsmops all schedules` - View the current on-call schedule 👥
+🎯 **Available Commands:**
+• `firebot summary` 📋 - Generate a comprehensive summary of the incident
+• `firebot time` ⏰ - Show how long the incident has been open
+• `firebot timeline` 📊 - Generate a detailed timeline of events and response metrics
+• `firebot resolve` ✅ - Mark incident as resolved and post summary to Jira ticket
 
-Just type one of these commands in the channel!"""
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📚 **Additional Useful Commands:**
+• 👥 `/jsmops all schedules` - View the current on-call schedule
+
+Just type one of these commands in the channel! 🐾"""
     
     response_ts = post_message(channel_id, help_text)
     return response_ts
@@ -2082,7 +2086,13 @@ def post_welcome_message(source_channel, new_channel_name, new_channel_id):
         headers=SLACK_HEADERS,
         json={
             "channel": source_channel,
-            "text": f":rotating_light: Incident channel <#{new_channel_id}|{new_channel_name}> has been created. Please move all communications there. :rotating_light:"
+            "text": f"""🚨 **INCIDENT CHANNEL CREATED** 🚨
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📢 Please move all communications to <#{new_channel_id}|{new_channel_name}>
+
+I'll help coordinate the incident response there! 🤖"""
         }
     ).json()
     if not response.get("ok"):
@@ -2092,7 +2102,14 @@ def post_summary_message(channel_id, summary):
     response = requests.post(
         "https://slack.com/api/chat.postMessage",
         headers=SLACK_HEADERS,
-        json={"channel": channel_id, "text": f"*Incident Summary:*\n{summary}"}
+        json={
+            "channel": channel_id,
+            "text": f"""📋 **Incident Summary** 📋
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{summary}"""
+        }
     ).json()
     if not response.get("ok"):
         print(f"Error posting summary message: {response.get('error')}")
@@ -2379,31 +2396,41 @@ def is_our_command_response(event_data):
 
 def post_incident_channel_greeting(channel_id, issue_key):
     """Post a greeting message to the incident channel with AI command information"""
-    greeting_text = f"""🚨 **Welcome to the incident channel for {issue_key}!**
+    greeting_text = f"""🚨 **Welcome to the incident channel for {issue_key}!** 🚨
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 🔗 **Jira Ticket:** <https://{JIRA_DOMAIN}/browse/{issue_key}|{issue_key}>
 
-I'm FireBot, your AI-powered incident management assistant. Here's what I can help you with:
+I'm FireBot 🤖, your AI-powered incident management assistant. Here's what I can help you with:
 
-🤖 **AI Commands Available:**
-• `firebot summary` - Generate a comprehensive AI summary of the incident
-• `firebot time` - Show how long the incident has been open
-• `firebot timeline` - Generate a detailed timeline of events and response metrics
-• `firebot resolve` - Mark incident as resolved and post summary to Jira ticket
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🎯 **AI Commands Available:**
+• `firebot summary` 📋 - Generate a comprehensive AI summary of the incident
+• `firebot time` ⏰ - Show how long the incident has been open
+• `firebot timeline` 📊 - Generate a detailed timeline of events and response metrics
+• `firebot resolve` ✅ - Mark incident as resolved and post summary to Jira ticket
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 📚 **Helpful Resources:**
-• <https://www.notion.so/instinctvet/Production-Support-Technical-How-Tos-d1c221f62ca64ce1ba76885fb8190aeb|Production Support Technical How-Tos> - Common troubleshooting steps and solutions
-• <https://instinctual.instinctvet.com|Instinctual> - Access customer instances for problem replication
-• <https://app.datadoghq.com/logs|Datadog Logs> - View application and system logs
-• Use `/jsmops all schedules` to see who's currently on-call
+• 📖 <https://www.notion.so/instinctvet/Production-Support-Technical-How-Tos-d1c221f62ca64ce1ba76885fb8190aeb|Production Support Technical How-Tos> - Common troubleshooting steps
+• 🔄 <https://instinctual.instinctvet.com|Instinctual> - Access customer instances for testing
+• 📊 <https://app.datadoghq.com/logs|Datadog Logs> - View application and system logs
+• 👥 Use `/jsmops all schedules` to see who's currently on-call
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 💡 **What I've already done:**
-• Analyzed the Jira ticket for missing investigation details
-• Uploaded any screenshots or media from the ticket
-• Reached out to the ticket creator for additional information
-• Paged the on-call engineer (they will be automatically escalated if no response)
+• 🔍 Analyzed the Jira ticket for missing investigation details
+• 📎 Uploaded any screenshots or media from the ticket
+• 📬 Reached out to the ticket creator for additional information
+• 📱 Paged the on-call engineer (auto-escalation if no response)
 
-An engineer will be joining the channel shortly to help investigate and resolve this incident. Don't worry if you don't see them immediately - our escalation system ensures someone will respond.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+👨‍💻 An engineer will be joining shortly to help investigate and resolve this incident. Don't worry if you don't see them immediately - our escalation system ensures someone will respond.
 
 Just type one of the commands above to get started! I'm here to help make incident management more efficient. 🐾"""
 
@@ -2646,19 +2673,21 @@ def format_timeline_message(timeline_data, channel_name):
     created_time = timeline_data["created_time"]
     
     # Format header
-    header = f"📊 **Incident Timeline for #{channel_name}**\n\n"
+    header = f"📊 **Incident Timeline for #{channel_name}** 📊\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
     
     # Format response metrics
-    metrics = ["🕐 **Response Metrics:**"]
+    metrics = ["\n⏱️ **Response Metrics:**"]
     if timeline_data["first_response_time"]:
-        metrics.append(f"• Time to First Engineer Response: {format_duration(timeline_data['first_response_time'])}")
+        metrics.append(f"• 🔄 Time to First Engineer Response: {format_duration(timeline_data['first_response_time'])}")
     if timeline_data["total_duration"]:
-        metrics.append(f"• Total Resolution Time: {format_duration(timeline_data['total_duration'])}")
-    metrics.append(f"• Incident Start: {created_time.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+        metrics.append(f"• ⌛ Total Resolution Time: {format_duration(timeline_data['total_duration'])}")
+    metrics.append(f"• 📅 Incident Start: {created_time.strftime('%Y-%m-%d %H:%M:%S UTC')}")
     
     # Add note if no engineer response yet
     if not timeline_data["first_response_time"]:
         metrics.append("• ⚠️ No engineer response detected yet")
+    
+    metrics.append("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     
     # Format participants
     participants = []
@@ -2669,15 +2698,30 @@ def format_timeline_message(timeline_data, channel_name):
         else:
             participants.append(user_id)
     
-    participant_section = "\n👥 **Participants:**\n• " + "\n• ".join(participants)
+    participant_section = "\n\n👥 **Participants:**\n• 👤 " + "\n• 👤 ".join(participants)
+    participant_section += "\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     
     # Format timeline events
-    timeline_events = ["\n⏰ **Event Timeline:**"]
+    timeline_events = ["\n\n⏰ **Event Timeline:**"]
     sorted_events = sorted(timeline_data["key_events"], key=lambda x: x["time"])
     
     for event in sorted_events:
         time_str = event["time"].strftime("%H:%M:%S UTC")
-        timeline_events.append(f"• {time_str} - {event['event']}: {event['details']}")
+        # Add emoji based on event type
+        emoji = "🔵"  # Default
+        if "joined" in event["event"].lower():
+            emoji = "➡️"
+        elif "created" in event["event"].lower():
+            emoji = "🆕"
+        elif "uploaded" in event["event"].lower():
+            emoji = "📎"
+        elif "response" in event["event"].lower():
+            emoji = "💬"
+        elif "resolution" in event["event"].lower():
+            emoji = "✅"
+        elif "investigation" in event["event"].lower():
+            emoji = "🔍"
+        timeline_events.append(f"• {emoji} {time_str} - {event['event']}: {event['details']}")
     
     # Combine all sections
     message = "\n".join([
