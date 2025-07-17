@@ -24,8 +24,12 @@ except ImportError:
 
 # --- ENVIRONMENT VARIABLES ---
 SLACK_BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
-JIRA_USERNAME = os.environ["JIRA_USERNAME"]
-JIRA_API_TOKEN = os.environ["JIRA_API_TOKEN"]
+# Legacy Jira credentials (for backward compatibility)
+JIRA_USERNAME = os.environ.get("JIRA_USERNAME")
+JIRA_API_TOKEN = os.environ.get("JIRA_API_TOKEN")
+# Firebot Jira credentials (preferred)
+FIREBOT_JIRA_USERNAME = os.environ.get("FIREBOT_JIRA_USERNAME", JIRA_USERNAME)
+FIREBOT_JIRA_API_TOKEN = os.environ.get("FIREBOT_JIRA_API_TOKEN", JIRA_API_TOKEN)
 JIRA_DOMAIN = os.environ["JIRA_DOMAIN"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 # Optional: SLACK_BOT_USER_ID can be set to help prevent duplicate processing
@@ -1677,7 +1681,7 @@ def fetch_jira_data(issue_key):
     print(f"Fetching Jira ticket from URL: {url}")
     response = requests.get(
         url,
-        auth=(JIRA_USERNAME, JIRA_API_TOKEN),
+        auth=(FIREBOT_JIRA_USERNAME, FIREBOT_JIRA_API_TOKEN),
         headers={"Accept": "application/json"}
     )
     print("Jira response status:", response.status_code)
@@ -1777,7 +1781,7 @@ def fetch_jira_attachments(issue_key):
         
         response = requests.get(
             url,
-            auth=(JIRA_USERNAME, JIRA_API_TOKEN),
+            auth=(FIREBOT_JIRA_USERNAME, FIREBOT_JIRA_API_TOKEN),
             headers={"Accept": "application/json"},
             params={"expand": "attachment"}
         )
@@ -1839,7 +1843,7 @@ def download_and_process_media(attachments):
             # Download the file
             download_response = requests.get(
                 download_url,
-                auth=(JIRA_USERNAME, JIRA_API_TOKEN),
+                auth=(FIREBOT_JIRA_USERNAME, FIREBOT_JIRA_API_TOKEN),
                 stream=True  # Stream large files
             )
             
@@ -2454,7 +2458,7 @@ def update_jira_with_slack_link(issue_key, channel_name, channel_id):
         
         response = requests.post(
             url,
-            auth=(JIRA_USERNAME, JIRA_API_TOKEN),
+            auth=(FIREBOT_JIRA_USERNAME, FIREBOT_JIRA_API_TOKEN),
             headers={"Content-Type": "application/json"},
             json=comment_body
         )
@@ -2889,7 +2893,7 @@ def post_resolution_to_jira(issue_key, summary):
         
         response = requests.post(
             url,
-            auth=(JIRA_USERNAME, JIRA_API_TOKEN),
+            auth=(FIREBOT_JIRA_USERNAME, FIREBOT_JIRA_API_TOKEN),
             headers={"Content-Type": "application/json"},
             json=comment_body
         )

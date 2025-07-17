@@ -8,12 +8,14 @@ FireBot is an AWS Lambda-powered Slack bot designed to streamline incident manag
 - **Smart Channel Creation**: Automatically creates incident channels when Jira tickets (ISD-XXXXX) are mentioned
 - **Intelligent Naming**: Channels follow the pattern `incident-{ticket}-{date}-{hospital}`
 - **User Invitation**: Automatically invites ticket reporters and mentioning users to incident channels
-- **Deduplication**: Prevents duplicate processing and channel creation
+- **Deduplication**: Prevents duplicate processing using both in-memory cache and DynamoDB
+- **Distributed Coordination**: Uses DynamoDB for reliable incident processing across multiple instances
 
 ### 🧠 **AI-Powered Ticket Analysis**
 - **Gemini Integration**: Uses Google's Gemini AI to generate concise, actionable incident summaries
 - **Intelligent Parsing**: Handles both plain text and Atlassian Document Format (ADF) descriptions
-- **Fallback Models**: Automatic fallback between Gemini models for reliability
+- **Fallback Models**: Automatic fallback between Gemini models (1.5-flash, 1.5-pro, pro) for reliability
+- **Model Mapping**: Smart mapping of legacy model names to new versions
 
 ### ✅ **Investigation Checklist Analysis**
 FireBot analyzes each ticket against 7 critical investigation items:
@@ -28,19 +30,20 @@ FireBot analyzes each ticket against 7 critical investigation items:
 ### 📎 **Media Attachment Processing**
 - **Automatic Detection**: Finds and downloads images/videos from Jira tickets
 - **Smart Upload**: Uses modern Slack file upload API (files.getUploadURLExternal)
-- **Size Validation**: Enforces file size limits and validates image integrity
+- **Size Validation**: Enforces file size limits (100MB) and validates image integrity
 - **Rich Context**: Uploads include author information and source ticket references
 
 ### 🎯 **Intelligent Creator Outreach**
 - **User Lookup**: Finds ticket creators in Slack by email address
 - **Structured Requests**: Provides specific, actionable requests for missing information
 - **Encouraging Tone**: Uses supportive, collaborative messaging to reduce stress
+- **Contextual Analysis**: Adapts requests based on available information
 
 ### 🛡️ **Robust Error Handling**
 - **Graceful Degradation**: Individual feature failures don't break core functionality
 - **Comprehensive Logging**: Detailed logging for troubleshooting and monitoring
-- **Duplicate Prevention**: Smart caching prevents duplicate processing
-- **Bot Message Filtering**: Avoids processing its own messages
+- **Duplicate Prevention**: Smart caching with size management (1000 events max)
+- **Bot Message Filtering**: Avoids processing its own messages and other bot responses
 
 ### 🤖 **Interactive Commands**
 - **Channel Summary**: `firebot summary` - Generate comprehensive incident summaries using AI
@@ -50,11 +53,6 @@ FireBot analyzes each ticket against 7 critical investigation items:
 - **Smart Detection**: Only responds to commands in incident channels
 - **AI-Powered Analysis**: Uses Gemini to analyze channel history and provide insights
 
-### 🔗 **JSM ChatOps Integration**
-- **Automatic Bot Invitation**: Automatically invites JSM ChatOps bot to incident channels
-- **On-Call Schedule Access**: Use `/jsmops all schedules` to view current on-call schedules
-- **Seamless Workflow**: Integrates with existing FireBot functionality without disrupting the user experience
-
 ## 🚀 Getting Started
 
 ### Prerequisites
@@ -62,6 +60,7 @@ FireBot analyzes each ticket against 7 critical investigation items:
 - Slack workspace with bot permissions
 - Jira Cloud instance with API access
 - Google Cloud project with Gemini API access
+- DynamoDB table for coordination (optional but recommended)
 
 ### Required Environment Variables
 
@@ -71,8 +70,10 @@ SLACK_BOT_TOKEN=xoxb-your-slack-bot-token
 SLACK_BOT_USER_ID=U1234567890  # Optional: helps prevent duplicate processing
 
 # Jira Configuration  
-JIRA_USERNAME=your-jira-email@company.com
-JIRA_API_TOKEN=your-jira-api-token
+JIRA_USERNAME=your-jira-email@company.com  # Legacy support
+JIRA_API_TOKEN=your-jira-api-token        # Legacy support
+FIREBOT_JIRA_USERNAME=your-jira-email@company.com  # Preferred
+FIREBOT_JIRA_API_TOKEN=your-jira-api-token        # Preferred
 JIRA_DOMAIN=yourcompany.atlassian.net
 JIRA_HOSPITAL_FIELD=customfield_10297  # Hospital/practice field ID
 JIRA_SUMMARY_FIELD=customfield_10250   # Summary field ID
@@ -81,9 +82,10 @@ JIRA_SUMMARY_FIELD=customfield_10250   # Summary field ID
 GEMINI_API_KEY=your-gemini-api-key
 GEMINI_MODEL=gemini-1.5-flash  # Optional: defaults to gemini-1.5-flash
 
-# JSM ChatOps Configuration
-JSM_CHATOPS_BOT_USER_ID=U1234567890  # JSM ChatOps bot user ID
-JSM_CHATOPS_ENABLED=true  # Set to false to disable JSM integration
+# DynamoDB Configuration
+DYNAMODB_TABLE_NAME=firebot-coordination  # Optional: defaults to firebot-coordination
+DYNAMODB_REGION=us-east-2                # Optional: defaults to us-east-2
+```
 
 ### Required Slack Permissions
 
@@ -114,14 +116,6 @@ aws cloudformation deploy \
   --template-file dynamodb-table.yaml \
   --stack-name firebot-coordination \
   --capabilities CAPABILITY_IAM
-
-# Or create manually:
-aws dynamodb create-table \
-  --table-name firebot-coordination \
-  --attribute-definitions AttributeName=incident_key,AttributeType=S \
-  --key-schema AttributeName=incident_key,KeyType=HASH \
-  --billing-mode PAY_PER_REQUEST \
-  --time-to-live-specification AttributeName=expiration_time,Enabled=true
 ```
 
 #### Lambda IAM Permissions
@@ -141,7 +135,7 @@ Add these permissions to your Lambda execution role:
         "dynamodb:UpdateItem",
         "dynamodb:DeleteItem"
       ],
-      "Resource": "arn:aws:dynamodb:us-east-2:493456217622:table/firebot-coordination"
+      "Resource": "arn:aws:dynamodb:*:*:table/firebot-coordination"
     }
   ]
 }
@@ -155,33 +149,36 @@ Install the required Python packages:
 pip install -r requirements.txt
 ```
 
-**requirements.txt:**
-```
-google-generativeai
-requests
-Pillow>=9.0.0
-```
-
 ## 🏗️ Architecture
 
+FireBot uses a distributed, event-driven architecture to process incidents reliably:
+
+```mermaid
+graph TD
+    A[Slack Event] -->|Message with ISD-XXXXX| B[AWS Lambda FireBot]
+    B -->|Check Cache| C[In-Memory Cache]
+    B -->|Check/Update Lock| D[DynamoDB]
+    B -->|Fetch Ticket| E[Jira API]
+    E -->|Ticket Data| B
+    B -->|Generate Summary| F[Gemini AI]
+    F -->|AI Analysis| B
+    E -->|Media Files| G[Media Processing]
+    G -->|Processed Files| B
+    B -->|Create Channel| H[Slack API]
+    B -->|Post Messages| H
+    B -->|Upload Files| H
+    B -->|Update Ticket| E
+    I[FireBot Commands] -->|summary/time/timeline/resolve| B
 ```
-┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
-│   Slack Event   │───▶│   AWS Lambda     │───▶│   Jira API      │
-│   (Message)     │    │   (FireBot)      │    │   (Fetch Data)  │
-└─────────────────┘    └──────────────────┘    └─────────────────┘
-                              │
-                              ▼
-                       ┌──────────────────┐
-                       │   Gemini AI      │
-                       │   (Analysis)     │
-                       └──────────────────┘
-                              │
-                              ▼
-                       ┌──────────────────┐
-                       │   Slack API      │
-                       │   (Response)     │
-                       └──────────────────┘
-```
+
+Key Components:
+- **AWS Lambda**: Serverless function that processes Slack events and coordinates incident response
+- **DynamoDB**: Provides distributed locking and deduplication across multiple Lambda instances
+- **In-Memory Cache**: Fast local cache for event deduplication within a Lambda instance
+- **Jira API**: Source of incident ticket data and media attachments
+- **Gemini AI**: Generates intelligent summaries and analyzes incident details
+- **Slack API**: Creates channels, posts messages, and handles file uploads
+- **Media Processing**: Validates and processes images/videos from Jira tickets
 
 ## 📋 Usage
 
@@ -199,7 +196,6 @@ Pillow>=9.0.0
 4. **Media Processing**: Downloads and uploads any screenshots/videos from the ticket
 
 5. **Creator Outreach**: Invites ticket creator and provides specific guidance on missing information
-6. **JSM Integration**: Access on-call schedules using `/jsmops all schedules`
 
 ### Interactive Commands
 
@@ -210,25 +206,23 @@ firebot summary   # Generate comprehensive incident summary
 firebot time      # Show incident duration
 firebot timeline  # Generate detailed timeline with response metrics
 firebot resolve   # Mark incident as resolved and post summary to Jira
-/jsmops all schedules  # View the current on-call schedule 👥
 ```
 
 ### Sample Output
 
 **Channel Creation Message:**
 ```
-🚨 Incident channel #incident-isd-12345-20250109-amc has been created. 
-Please move all communications there. 🚨
-```
+🚨 **Welcome to the incident channel for ISD-12345!**
 
-**AI Summary:**
-```
-Incident Summary:
-PDF printing outage affecting all users and workstations. Started ~1 hour ago.
+🔗 **Jira Ticket:** https://yourcompany.atlassian.net/browse/ISD-12345
 
-The system is experiencing a widespread printing issue where PDF generation 
-fails across all practice locations. This appears to be a backend service 
-disruption affecting core functionality.
+I'm FireBot, your AI-powered incident management assistant. Here's what I can help you with:
+
+🤖 **AI Commands Available:**
+• `firebot summary` - Generate a comprehensive AI summary of the incident
+• `firebot time` - Show how long the incident has been open
+• `firebot timeline` - Generate a detailed timeline of events and response metrics
+• `firebot resolve` - Mark incident as resolved and post summary to Jira ticket
 ```
 
 **Investigation Checklist Results:**
@@ -241,175 +235,4 @@ To help our development team investigate more efficiently, could you please prov
 • Practice-wide impact - Is this affecting all users or specific team members?
 
 This information will help us resolve the issue faster. Thanks for your collaboration! 🐾
-```
-
-**FireBot Commands Output:**
-
-**Summary Command:**
-```
-📋 **Incident Summary**
-
-Key Events:
-• 14:30 - Issue first reported by @john
-```
-
-**Timeline Command:**
-```
-📊 **Incident Timeline for #incident-isd-12345-20250109-amc**
-
-🕐 **Response Metrics:**
-• Time to First Engineer Response: 5 minutes
-• Total Resolution Time: 45 minutes
-• Incident Start: 2025-01-09 14:30:00 UTC
-
-👥 **Participants:**
-• John Smith
-• Sarah Engineer
-• Mike Support
-
-⏰ **Event Timeline:**
-• 14:30:00 - Incident Channel Created: Bot created incident channel
-• 14:31:00 - Creator Joined: Ticket creator John Smith joined the channel
-• 14:32:00 - Engineer Joined: Engineer Sarah Engineer joined the channel
-• 14:35:00 - First Engineer Response: First response from engineer Sarah Engineer
-• 14:40:00 - Investigation: Investigation update from Sarah Engineer
-• 15:15:00 - Resolution: Resolution indicated by Sarah Engineer
-• 14:45 - @sarah joined to investigate
-• 15:00 - Root cause identified as database connection issue
-• 15:15 - Fix deployed to staging
-
-Current Status: Monitoring fix in production
-People Involved: @john (reporter), @sarah (developer), @mike (devops)
-Next Steps: Verify fix resolves issue for all users
-```
-
-**Time Command:**
-```
-⏰ **Incident Duration**
-
-This incident has been open for: **2 hours and 45 minutes**
-Started: 2025-01-09 14:30:00 UTC
-```
-
-**On-Call Command:**
-```
-/jsmops all schedules
-```
-
-## 🔧 Configuration
-
-### Custom Field Mapping
-
-Update these environment variables to match your Jira instance:
-
-```bash
-JIRA_HOSPITAL_FIELD=customfield_10297  # Your hospital/practice field
-JIRA_SUMMARY_FIELD=customfield_10250   # Your summary field  
-```
-
-### Investigation Checklist
-
-The bot analyzes tickets against these items (configurable in code):
-- Issue replication in customer's application
-- Issue replication on Demo instance
-- Steps to reproduce  
-- Screenshots provided
-- Problem start time
-- Practice-wide impact
-- Multi-practice impact
-
-### File Upload Limits
-
-- **Maximum file size**: 100MB per file
-- **Supported formats**: All image/* and video/* MIME types
-- **Validation**: Images are validated using PIL/Pillow
-- **Upload method**: Modern Slack API (files.getUploadURLExternal + files.completeUploadExternal)
-
-### JSM ChatOps Setup
-
-To enable JSM ChatOps integration:
-
-1. **Install JSM ChatOps App**: Add the Jira Service Management ChatOps app to your Slack workspace
-2. **Get Bot User ID**: Find the JSM ChatOps bot user ID in your Slack workspace
-   - Go to the JSM ChatOps bot's profile in Slack
-   - Copy the user ID (starts with "U")
-3. **Configure Environment Variables**:
-   ```bash
-   JSM_CHATOPS_BOT_USER_ID=U1234567890  # Replace with actual bot user ID
-   JSM_CHATOPS_ENABLED=true
-   ```
-4. **Test Integration**: The bot will automatically invite JSM ChatOps to incident channels
-
-**Note**: The JSM ChatOps bot must have proper permissions to join channels in your Slack workspace.
-
-## 🐛 Troubleshooting
-
-### Common Issues
-
-**1. Duplicate Messages/Channels**
-- Check `SLACK_BOT_USER_ID` is set correctly
-- Verify bot message filtering is working
-- Review event deduplication logs
-
-**2. Media Upload Failures**
-- Error `method_deprecated`: Using old Slack API (fixed in current version)
-- Large files: Check file size limits in logs (reduced to 50MB for faster processing)
-- Invalid images: PIL validation may reject corrupted files
-- Timeout issues: Media processing now has 10-second timeout to prevent Lambda timeouts
-
-**3. Jira Authentication Issues**
-- Verify `JIRA_API_TOKEN` is valid and has read permissions
-- Check `JIRA_USERNAME` matches the token owner
-- Confirm `JIRA_DOMAIN` format (without https://)
-
-**4. AI Analysis Failures**
-- Check `GEMINI_API_KEY` is valid
-- Review quota limits in Google Cloud Console
-- Bot falls back to simpler messages if AI fails
-
-**5. JSM ChatOps Integration Issues**
-- Verify `JSM_CHATOPS_BOT_USER_ID` is set correctly
-- Check `JSM_CHATOPS_ENABLED` is set to "true"
-- Ensure the JSM bot has proper permissions in your Slack workspace
-- Review logs for invitation errors
-- The bot now verifies membership after invitation and provides fallback messages if the bot isn't available
-
-### Debugging
-
-Enable detailed logging by checking CloudWatch Logs:
-
-```python
-print(f"Processing event: {event_id}")
-print(f"Jira response: {response.status_code}")
-print(f"AI model used: {model_name}")
-```
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-- **Slack API**: For robust messaging and file upload capabilities
-- **Google Gemini**: For intelligent ticket analysis and natural language processing
-- **Atlassian Jira**: For comprehensive incident tracking integration
-- **AWS Lambda**: For serverless, scalable execution environment
-
-## 📞 Support
-
-For questions, issues, or feature requests:
-1. Check the [troubleshooting section](#-troubleshooting)
-2. Review CloudWatch logs for detailed error information
-3. Open an issue in this repository
-
----
-
-**Made with ❤️ for veterinary teams everywhere** 🐾 
+``` 
