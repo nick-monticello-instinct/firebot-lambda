@@ -2898,6 +2898,12 @@ def generate_incident_resolution_summary(messages, timeline_data, issue_key):
             text = msg.get("text", "")
             timestamp = msg.get("ts", "")
             
+            # Skip bot messages
+            if (user_id in timeline_data["bot_user_ids"] or 
+                msg.get("bot_id") or 
+                msg.get("app_id")):
+                continue
+            
             # Look up user info for proper display name
             user_info = get_user_info(user_id)
             display_name = user_info.get("real_name", user_id) if user_info else user_id
@@ -2922,12 +2928,31 @@ def generate_incident_resolution_summary(messages, timeline_data, issue_key):
         
         metrics_text = "\n".join(metrics)
         
+        # Filter out bot users from participants
+        human_participants = [
+            user_id for user_id in timeline_data["participants"]
+            if user_id not in timeline_data["bot_user_ids"]
+        ]
+        
+        # Get display names for human participants
+        participant_names = []
+        for user_id in human_participants:
+            user_info = get_user_info(user_id)
+            if user_info:
+                participant_names.append(user_info.get("real_name", user_id))
+            else:
+                participant_names.append(user_id)
+        
+        participants_text = ", ".join(participant_names) if participant_names else "No participants recorded"
+        
         prompt = f"""You are an incident management assistant. Generate a comprehensive resolution summary for this incident.
 
 Issue: {issue_key}
 
 Timeline Metrics:
 {metrics_text}
+
+Participants: {participants_text}
 
 Recent Channel Activity:
 {messages_text}
@@ -2938,7 +2963,7 @@ Please provide a structured summary that includes:
 3. Resolution: How was the issue resolved?
 4. Key Actions: What were the main steps taken?
 5. Timeline: Brief timeline of key events
-6. Participants: Who was involved in resolution
+6. Participants: Who was involved in resolution (excluding bots)
 7. Recommendations: Any follow-up actions needed
 
 Keep it professional and factual. Focus on the most important information for documentation."""
