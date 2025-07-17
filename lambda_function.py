@@ -564,8 +564,24 @@ def handle_firebot_summary(channel_id, user_id):
         # Generate summary using AI
         summary = generate_incident_summary(messages, channel_id)
         
+        # Format the summary message with better Slack formatting
+        formatted_message = f"""🎯 Incident Summary 🎯
+
+━━━━━━━━━━━ 🔍 DETAILS 🔍 ━━━━━━━━━━━
+
+{summary}
+
+━━━━━━━━━━━ 🤖 NEXT STEPS 🤖 ━━━━━━━━━━━
+
+Need more information? Try:
+• `firebot timeline` 📊 - For a detailed event timeline
+• `firebot time` ⏰ - To check incident duration
+• `firebot resolve` ✅ - When everything's fixed!
+
+Stay awesome! 🌟"""
+        
         # Post the summary
-        response_ts = post_message(channel_id, f"📋 Incident Summary\n\n{summary}")
+        response_ts = post_message(channel_id, formatted_message)
         return response_ts
         
     except Exception as e:
@@ -670,44 +686,41 @@ def generate_incident_summary(messages, channel_id):
                 formatted_messages.append(f"{time_str} - {display_name}: {text}")
         
         # Create a prompt for the AI
-        prompt = f"""
-Please analyze these incident chat messages and generate a fun, engaging summary with the following sections:
+        prompt = f"""Please analyze these incident chat messages and generate a fun, engaging summary. 
+IMPORTANT: Do not use asterisks (*) or underscores (_) for formatting - use plain text only.
 
-## CARE System Outage: A Thrilling Rescue Mission! 
+Format the summary with these sections:
+
+🚨 CARE System Outage: A Thrilling Rescue Mission!
 
 This incident report summarizes the swift resolution of a CARE system outage impacting all workstations. Let's dive into the exciting details!
 
 🎬 Key Events and Timeline:
-
-• 02:44:40 PM EDT: 🚨 Incident ISD-11345 reported: All CARE workstations unable to process treatments. Nick Monticello bravely sounds the alarm!
-• 02:45:12 PM EDT: FireBot 🤖 springs into action, notifying the team and requesting crucial information from Nick. A screenshot and Jira ticket are created.
-• 02:45:53 PM EDT: Nick, our intrepid hero, discovers the culprit: a crashed job responsible for treatments! 🔍
-• 02:46:04 PM EDT: Victory! Nick restarts the rogue job and confirms everything's back online. 💪
+• 02:44:40 PM EDT: 🚨 Incident ISD-11345 reported - All CARE workstations unable to process treatments. Nick Monticello bravely sounds the alarm!
+• 02:45:12 PM EDT: FireBot 🤖 springs into action, creating tickets and gathering info
+• 02:45:53 PM EDT: Nick discovers the culprit - a crashed job responsible for treatments! 🔍
+• 02:46:04 PM EDT: Victory! Nick restarts the rogue job and confirms everything's back online 💪
 
 👥 The Dream Team:
-
-• Nick Monticello: Our star reporter and quick-thinking troubleshooter! Nick swiftly identified the issue and implemented the fix. ⭐
-• FireBot (that's me!): Providing real-time support, information gathering, and incident tracking. Always ready to assist! 🤖
-• Development Team: A developer is en route, providing a watchful eye and ensuring a thorough investigation to prevent future incidents. 💻
+• Nick Monticello: Our star reporter and quick-thinking troubleshooter! ⭐
+• FireBot: Providing real-time support and incident tracking 🤖
+• Development Team: Standing by to prevent future incidents 💻
 
 📊 Current Status:
-
-🏁 Incident Resolved! The CARE system is back up and running smoothly. All workstations are processing treatments successfully.
+🏁 Incident Resolved! The CARE system is back up and running smoothly.
 
 🎯 Key Actions Taken:
-
-• Immediate reporting and clear communication.
-• Quick identification of the root cause (crashed treatment job).
-• Swift resolution via a restart.
-• FireBot provided excellent support and documentation.
+• Immediate reporting and clear communication
+• Quick identification of root cause (crashed treatment job)
+• Swift resolution via restart
+• FireBot provided excellent support and documentation
 
 ⏭️ Next Steps:
+• Development team will investigate why the job crashed
+• Post-incident review to enhance system resilience
+• Celebrate our team's awesome collaborative response! ☕
 
-• The development team will conduct a thorough investigation to understand why the job crashed and implement preventive measures. 🔬
-• Post-incident review to refine our processes and enhance system resilience. 📋
-• We'll celebrate our team's awesome collaborative response with virtual high-fives (or maybe some actual coffee!). ☕
-
-Overall, this incident showcased excellent teamwork, rapid response, and the effectiveness of our incident management process! A big thank you to everyone involved! 👏
+Overall, this incident showcased excellent teamwork, rapid response, and effective incident management! A big thank you to everyone involved! 👏
 
 Messages to analyze:
 {formatted_messages}
