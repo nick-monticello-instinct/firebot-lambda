@@ -1208,17 +1208,23 @@ def analyze_and_reach_out_to_creator(ticket, channel_id, issue_key, attachments)
             print(f"Could not find Slack user for email: {creator_info.get('email')}")
             return False
         
+        # Parse ticket data
+        parsed_data = parse_jira_ticket(ticket)
+        
         # Analyze ticket for missing information
-        checklist_results = analyze_incident_checklist(ticket, ticket, attachments)
+        checklist_results = analyze_incident_checklist(parsed_data, ticket, attachments)
         
         # Generate missing items requests
-        missing_items_message = generate_missing_items_requests(checklist_results.get("missing_items", []), issue_key, ticket)
+        missing_items_message = generate_missing_items_requests(checklist_results.get("missing_items", []), issue_key, parsed_data)
         
         # Generate combined message
-        message = generate_combined_incident_message(creator_info, checklist_results, issue_key, slack_user_id, ticket)
+        message = generate_combined_incident_message(creator_info, checklist_results, issue_key, slack_user_id, parsed_data)
         
         # Post message
         post_creator_outreach_message(channel_id, message, slack_user_id)
+        
+        # Invite creator to the channel
+        invite_user_to_channel(slack_user_id, channel_id)
         
         return True
         
@@ -1260,8 +1266,8 @@ def generate_combined_incident_message(creator_info, checklist_results, issue_ke
     """Generate a combined message for the creator with missing information requests"""
     # Start with a personalized greeting
     message_parts = [
-        f"@{slack_user_id} We've received your report (ISD-{issue_key}) regarding {parsed_data.get('summary', 'the incident')}.",
-        f"Thanks for quickly identifying and reporting this {parsed_data.get('type', 'issue')}, {creator_info.get('name', 'there')}!",
+        f"<@{slack_user_id}> We've received your report ({issue_key}) regarding {parsed_data.get('summary', 'the incident')}.",
+        f"Thanks for quickly identifying and reporting this {parsed_data.get('type', 'issue')}, {creator_info.get('display_name', 'there')}!",
         "",
         "A developer is en route to investigate. To expedite a resolution, please provide:",
         ""
@@ -1901,7 +1907,7 @@ def upload_media_to_slack(media_files, channel_id, issue_key):
             
             # Step 3: Complete the upload and share to channel
             print(f"Step 3: Completing upload and sharing {filename}")
-            initial_comment = f"📎 **{filename}** (uploaded by {author} on {created[:10]})\nFrom Jira ticket {issue_key}"
+            initial_comment = f"📎 {filename} (uploaded by {author} on {created[:10]})\nFrom Jira ticket {issue_key}"
             
             complete_response = requests.post(
                 "https://slack.com/api/files.completeUploadExternal",
