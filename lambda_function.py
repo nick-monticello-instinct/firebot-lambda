@@ -1463,28 +1463,26 @@ def generate_missing_items_requests(missing_items, issue_key, parsed_data):
         return "Great news! This ticket appears to have all the key investigation details we need. 🎉"
     
     try:
-        missing_items_text = "\n".join([f"• {item['item']}: {item['explanation']}" for item in missing_items])
+        # Format missing items more efficiently
+        missing_items_text = "\n".join([f"• {item['item']}" for item in missing_items])
         
-        prompt = f"""You are a helpful incident response assistant for a veterinary software company. Generate a friendly, specific request for missing investigation details.
+        # More concise prompt
+        prompt = f"""Generate a brief, friendly message requesting missing details for {issue_key}.
 
-INCIDENT: {issue_key}
-SUMMARY: {parsed_data.get('summary', '')[:200]}
-DESCRIPTION: {parsed_data.get('description', '')[:500]}...
+Context: {parsed_data.get('summary', '')[:100]}
 
-MISSING ITEMS:
+Missing Items:
 {missing_items_text}
 
-Create a supportive message that:
-1. Thanks the reporter for the detailed ticket
-2. Explains we need a few more details to investigate efficiently  
-3. Lists the specific missing items as actionable requests
-4. Uses a collaborative, helpful tone
-5. Emphasizes we're working together to help veterinary practices
+Format: Thank reporter briefly, then list specific actionable requests for each missing item. Keep tone encouraging but direct. No formal closings."""
 
-Use bullet points for the requests and keep the tone encouraging. Make each request specific and actionable. Don't use the reporter's name since we'll mention them separately.
-Base your requests on the context from both the summary and description.
-Keep it direct and concise - no formal closings like 'Best Regards' or 'Thanks again'."""
-
+        # Set generation config for more efficient responses
+        generation_config = {
+            "max_output_tokens": 200,  # Limit response length
+            "temperature": 0.3,        # More focused/deterministic
+            "top_p": 0.8              # More focused token selection
+        }
+        
         fallback_models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
         models_to_try = [GEMINI_MODEL] + [m for m in fallback_models if m != GEMINI_MODEL]
         
@@ -1492,7 +1490,10 @@ Keep it direct and concise - no formal closings like 'Best Regards' or 'Thanks a
             try:
                 print(f"Generating missing items requests with model: {model_name}")
                 model = genai.GenerativeModel(model_name)
-                response = model.generate_content(prompt)
+                response = model.generate_content(
+                    prompt,
+                    generation_config=generation_config
+                )
                 
                 if hasattr(response, 'text') and response.text:
                     print(f"Successfully generated missing items requests with model: {model_name}")
@@ -1503,11 +1504,15 @@ Keep it direct and concise - no formal closings like 'Best Regards' or 'Thanks a
                         print(f"Successfully generated missing items requests with model: {model_name}")
                         return request_text.strip()
                 
+                print(f"Empty response from model: {model_name}")
+                
             except Exception as e:
                 print(f"Error with model {model_name}: {e}")
+                if model_name == models_to_try[-1]:  # Last model failed
+                    return generate_fallback_missing_items_message(missing_items)
                 continue
         
-        # Fallback if AI fails
+        # If all models fail, use fallback
         return generate_fallback_missing_items_message(missing_items)
         
     except Exception as e:
