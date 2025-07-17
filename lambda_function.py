@@ -2461,56 +2461,18 @@ I'm FireBot 🤖, your AI-powered incident management assistant. Here's what I c
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-💡 **What I've already done:**
-• 🔍 Analyzed the Jira ticket for missing investigation details
-• 📎 Uploaded any screenshots or media from the ticket
-• 📬 Reached out to the ticket creator for additional information
-• 📱 Paged the on-call engineer (auto-escalation if no response)
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
 👨‍💻 An engineer will be joining shortly to help investigate and resolve this incident. Don't worry if you don't see them immediately - our escalation system ensures someone will respond.
 
 Just type one of the commands above to get started! I'm here to help make incident management more efficient. 🐾"""
 
-        response = requests.post(
-            "https://slack.com/api/chat.postMessage",
-            headers=SLACK_HEADERS,
-            json={
-                "channel": channel_id,
-                "text": greeting_text,
-                "unfurl_links": False,
-                "unfurl_media": False
-            }
-        ).json()
-        if not response.get("ok"):
-            print(f"Error posting incident channel greeting: {response.get('error')}")
-            
-    except Exception as e:
-        print(f"Error posting incident channel greeting: {e}")
-        # Post a simplified greeting if we hit any errors
-        fallback_greeting = f"""🚨 **Welcome to the incident channel for {issue_key}!** 🚨
-
-I'm FireBot 🤖, your AI-powered incident management assistant.
-
-Available commands:
-• `firebot summary` - Generate incident summary
-• `firebot time` - Show incident duration
-• `firebot timeline` - Show event timeline
-• `firebot resolve` - Mark as resolved
-
-An engineer will be joining shortly to help investigate and resolve this incident."""
+        # Post the greeting message
+        response = post_message(channel_id, greeting_text)
+        print(f"Posted greeting message to channel {channel_id}")
+        return response
         
-        requests.post(
-            "https://slack.com/api/chat.postMessage",
-            headers=SLACK_HEADERS,
-            json={
-                "channel": channel_id,
-                "text": fallback_greeting,
-                "unfurl_links": False,
-                "unfurl_media": False
-            }
-        )
+    except Exception as e:
+        print(f"Error posting greeting message: {e}")
+        return None
 
 def update_jira_with_slack_link(issue_key, channel_name, channel_id):
     """Updates the Jira ticket with a link to the Slack incident channel"""
