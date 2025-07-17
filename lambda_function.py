@@ -666,68 +666,61 @@ def generate_incident_summary(messages, channel_id):
             if timestamp:
                 utc_time = datetime.datetime.fromtimestamp(float(timestamp))
                 eastern_time = utc_time.astimezone(eastern_tz)
-                time_str = eastern_time.strftime('%I:%M:%S %p EDT')
-            else:
-                time_str = "Unknown"
-            
-            formatted_messages.append(f"[{time_str}] {display_name}: {text}")
+                time_str = eastern_time.strftime("%I:%M:%S %p EDT")
+                formatted_messages.append(f"{time_str} - {display_name}: {text}")
         
-        # Limit to last 50 messages to avoid token limits
-        recent_messages = formatted_messages[:50]
-        messages_text = "\n".join(recent_messages)
+        # Create a prompt for the AI
+        prompt = f"""
+Please analyze these incident chat messages and generate a fun, engaging summary with the following sections:
+
+## CARE System Outage: A Thrilling Rescue Mission! 
+
+This incident report summarizes the swift resolution of a CARE system outage impacting all workstations. Let's dive into the exciting details!
+
+🎬 Key Events and Timeline:
+
+• 02:44:40 PM EDT: 🚨 Incident ISD-11345 reported: All CARE workstations unable to process treatments. Nick Monticello bravely sounds the alarm!
+• 02:45:12 PM EDT: FireBot 🤖 springs into action, notifying the team and requesting crucial information from Nick. A screenshot and Jira ticket are created.
+• 02:45:53 PM EDT: Nick, our intrepid hero, discovers the culprit: a crashed job responsible for treatments! 🔍
+• 02:46:04 PM EDT: Victory! Nick restarts the rogue job and confirms everything's back online. 💪
+
+👥 The Dream Team:
+
+• Nick Monticello: Our star reporter and quick-thinking troubleshooter! Nick swiftly identified the issue and implemented the fix. ⭐
+• FireBot (that's me!): Providing real-time support, information gathering, and incident tracking. Always ready to assist! 🤖
+• Development Team: A developer is en route, providing a watchful eye and ensuring a thorough investigation to prevent future incidents. 💻
+
+📊 Current Status:
+
+🏁 Incident Resolved! The CARE system is back up and running smoothly. All workstations are processing treatments successfully.
+
+🎯 Key Actions Taken:
+
+• Immediate reporting and clear communication.
+• Quick identification of the root cause (crashed treatment job).
+• Swift resolution via a restart.
+• FireBot provided excellent support and documentation.
+
+⏭️ Next Steps:
+
+• The development team will conduct a thorough investigation to understand why the job crashed and implement preventive measures. 🔬
+• Post-incident review to refine our processes and enhance system resilience. 📋
+• We'll celebrate our team's awesome collaborative response with virtual high-fives (or maybe some actual coffee!). ☕
+
+Overall, this incident showcased excellent teamwork, rapid response, and the effectiveness of our incident management process! A big thank you to everyone involved! 👏
+
+Messages to analyze:
+{formatted_messages}
+"""
         
-        # Generate summary using AI with a more fun prompt
-        prompt = f"""You are FireBot 🤖, a fun and helpful incident response assistant! Analyze this Slack conversation and create an engaging summary.
-
-Channel messages:
-{messages_text}
-
-Create a fun but professional summary with these sections (use emojis for each section!):
-
-🎬 Key Events and Timeline
-Make it chronological and engaging! Use timestamps in EDT.
-
-👥 The Dream Team
-Who's involved and what are their roles? Make it personal!
-
-📊 Current Status
-Where do we stand? Keep it clear and upbeat!
-
-🎯 Key Actions Taken
-What awesome steps has the team taken?
-
-⏭️ Next Steps
-What's coming up next? Any pending items?
-
-Keep it fun and engaging while maintaining professionalism. Use emojis strategically to highlight key points! Format in markdown with clear sections."""
-
-        fallback_models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
-        models_to_try = [GEMINI_MODEL] + [m for m in fallback_models if m != GEMINI_MODEL]
+        # Generate summary using AI
+        summary = generate_gemini_summary({"prompt": prompt})
         
-        for model_name in models_to_try:
-            try:
-                print(f"Generating incident summary with model: {model_name}")
-                model = genai.GenerativeModel(model_name)
-                response = model.generate_content(prompt)
-                
-                if hasattr(response, 'text') and response.text:
-                    print(f"Successfully generated incident summary with model: {model_name}")
-                    return response.text.strip()
-                elif response.parts:
-                    summary_text = ''.join(part.text for part in response.parts if hasattr(part, 'text'))
-                    if summary_text:
-                        print(f"Successfully generated incident summary with model: {model_name}")
-                        return summary_text.strip()
-                
-            except Exception as e:
-                print(f"Error with model {model_name}: {e}")
-                continue
-        
-        return "Could not generate summary."
+        return summary
         
     except Exception as e:
         print(f"Error generating incident summary: {e}")
-        return "Error generating summary."
+        return None
 
 def format_duration(duration):
     """Format a duration in a human-readable way"""
@@ -1201,48 +1194,87 @@ def post_coordination_message(channel_id, issue_key):
         print(f"Error posting coordination message: {e}")
 
 def analyze_and_reach_out_to_creator(ticket, channel_id, issue_key, attachments):
-    """Analyze ticket for missing info and reach out to creator"""
-    print(f"Analyzing ticket {issue_key} for missing information...")
-    
+    """Analyze ticket for missing information and reach out to creator"""
     try:
-        # Extract creator information from Jira
+        # Extract creator info
         creator_info = extract_creator_info(ticket)
         if not creator_info:
-            print("Could not extract creator information from ticket")
-            return
+            print("Could not extract creator info")
+            return False
         
-        # Analyze ticket for missing information using structured checklist
-        parsed_data = parse_jira_ticket(ticket)
+        # Find Slack user
+        slack_user_id = find_slack_user_by_email(creator_info.get("email"))
+        if not slack_user_id:
+            print(f"Could not find Slack user for email: {creator_info.get('email')}")
+            return False
         
-        # Run the structured checklist analysis (attachments already fetched)
-        checklist_results = analyze_incident_checklist(parsed_data, ticket, attachments)
+        # Analyze ticket for missing information
+        checklist_results = analyze_incident_checklist(ticket, ticket, attachments)
         
-        # Find creator in Slack
-        slack_user_id = find_slack_user_by_email(creator_info.get('email'))
+        # Generate missing items requests
+        missing_items_message = generate_missing_items_requests(checklist_results.get("missing_items", []), issue_key, ticket)
         
-        # Invite creator to the incident channel if found in Slack
-        if slack_user_id:
-            print(f"Inviting ticket creator {slack_user_id} to incident channel")
-            invite_user_to_channel(slack_user_id, channel_id)
+        # Generate combined message
+        message = generate_combined_incident_message(creator_info, checklist_results, issue_key, slack_user_id, ticket)
         
-        # Generate and send combined analysis + outreach message
-        combined_message = generate_combined_incident_message(
-            creator_info, 
-            checklist_results, 
-            issue_key,
-            slack_user_id,
-            parsed_data
-        )
+        # Post message
+        post_creator_outreach_message(channel_id, message, slack_user_id)
         
-        post_creator_outreach_message(channel_id, combined_message, slack_user_id)
-        
-        # Mark analysis as completed in the main cache
-        processed_events.add(f"analysis_{issue_key}")
-        print(f"Successfully completed analysis and outreach for {issue_key}")
+        return True
         
     except Exception as e:
-        print(f"Error in analyze_and_reach_out_to_creator: {e}")
-        raise
+        print(f"Error analyzing ticket and reaching out to creator: {e}")
+        return False
+
+def generate_missing_items_requests(missing_items, issue_key, parsed_data):
+    """Generate requests for missing information in a friendly format"""
+    if not missing_items:
+        return ""
+    
+    # Map missing items to friendly questions
+    question_map = {
+        "demo_replication": "Demo Instance Replication: Can you reproduce the problem on our demo instance?",
+        "steps_to_reproduce": "Reproducible Steps: Please detail the exact steps needed to replicate the issue.",
+        "affected_practices": "Multi-Practice Impact: Does this impact multiple veterinary practices, or just one?",
+        "error_messages": "Error Details: Are there any specific error messages or codes you're seeing?",
+        "browser_details": "Browser Info: Which browser and version are you using?",
+        "attempted_solutions": "Prior Attempts: Have you tried any solutions or workarounds?",
+        "impact_severity": "Impact Level: How severely is this affecting operations?",
+        "affected_users": "User Scope: Are all users experiencing this issue, or just specific roles?",
+        "occurrence_frequency": "Frequency: How often does this issue occur?",
+        "recent_changes": "Recent Changes: Were there any system changes before this started?"
+    }
+    
+    # Build the message
+    message_parts = []
+    for item in missing_items:
+        if item in question_map:
+            message_parts.append(f"• {question_map[item]}")
+    
+    if not message_parts:
+        return generate_fallback_missing_items_message(missing_items)
+    
+    return "\n".join(message_parts)
+
+def generate_combined_incident_message(creator_info, checklist_results, issue_key, slack_user_id, parsed_data):
+    """Generate a combined message for the creator with missing information requests"""
+    # Start with a personalized greeting
+    message_parts = [
+        f"@{slack_user_id} We've received your report (ISD-{issue_key}) regarding {parsed_data.get('summary', 'the incident')}.",
+        f"Thanks for quickly identifying and reporting this {parsed_data.get('type', 'issue')}, {creator_info.get('name', 'there')}!",
+        "",
+        "A developer is en route to investigate. To expedite a resolution, please provide:",
+        ""
+    ]
+    
+    # Add missing items if any
+    missing_items = checklist_results.get("missing_items", [])
+    if missing_items:
+        missing_items_text = generate_missing_items_requests(missing_items, issue_key, parsed_data)
+        message_parts.append(missing_items_text)
+    
+    # Join all parts with appropriate spacing
+    return "\n".join(message_parts)
 
 def extract_creator_info(ticket):
     """Extract creator/reporter information from Jira ticket"""
@@ -1565,129 +1597,6 @@ def find_slack_user_by_email(email):
         print(f"Error finding Slack user by email: {e}")
         return None
 
-def generate_combined_incident_message(creator_info, checklist_results, issue_key, slack_user_id, parsed_data):
-    """Generate a combined incident analysis and creator outreach message using structured checklist"""
-    try:
-        # Safely extract creator name
-        creator_name = "there"
-        if creator_info and creator_info.get("display_name"):
-            try:
-                creator_name = creator_info.get("display_name", "").split()[0]
-            except (AttributeError, IndexError):
-                creator_name = "there"
-        
-        user_mention = f"<@{slack_user_id}>" if slack_user_id else creator_name
-        
-        # Safely get incident summary and description
-        incident_summary = ""
-        incident_description = ""
-        if parsed_data:
-            try:
-                summary_text = str(parsed_data.get('summary', ''))
-                incident_summary = summary_text[:200] + ('...' if len(summary_text) > 200 else '')
-                
-                description_text = str(parsed_data.get('description', ''))
-                incident_description = description_text[:500] + ('...' if len(description_text) > 500 else '')
-            except (TypeError, AttributeError):
-                incident_summary = "Issue details available in ticket"
-                incident_description = ""
-        
-        # Safely extract checklist results
-        missing_items = []
-        found_items = []
-        if checklist_results and isinstance(checklist_results, dict):
-            missing_items = checklist_results.get('missing_items', []) or []
-            found_items = checklist_results.get('found_items', []) or []
-        
-        # Ensure they are lists
-        if not isinstance(missing_items, list):
-            missing_items = []
-        if not isinstance(found_items, list):
-            found_items = []
-        
-        if not missing_items:
-            # All investigation items are present
-            return f"{user_mention} **Incident Summary:** {incident_summary}\n\nThanks for reporting incident {issue_key}! 🎉 You did fantastic work providing all the key investigation details we need. A developer is on the way to help resolve this."
-        
-        # Generate specific requests for missing items
-        missing_items_request = generate_missing_items_requests(missing_items, issue_key, parsed_data)
-        
-        # Safely build found items summary
-        found_items_summary = ""
-        try:
-            if found_items:
-                found_items_names = []
-                for item in found_items[:3]:  # Only first 3 items
-                    if isinstance(item, dict) and 'item' in item:
-                        found_items_names.append(str(item['item']))
-                
-                if found_items_names:
-                    found_items_summary = ', '.join(found_items_names)
-                    if len(found_items) > 3:
-                        found_items_summary += '...'
-        except (TypeError, AttributeError, KeyError):
-            found_items_summary = "Several items"
-        
-        prompt = f"""You are a helpful incident response bot for a veterinary software company. Create a supportive message that combines incident acknowledgment with specific investigation requests.
-
-INCIDENT: {issue_key}
-SUMMARY: {incident_summary}
-DESCRIPTION: {incident_description}
-CREATOR: {creator_name}
-
-FOUND ITEMS ({len(found_items)}): {found_items_summary}
-
-MISSING ITEMS REQUEST:
-{missing_items_request}
-
-Create a message that:
-1. Briefly acknowledges the incident in 1-2 sentences
-2. Thanks the creator for their work reporting it
-3. Mentions a developer is on the way
-4. Includes the specific missing items request
-5. Maintains an encouraging, collaborative tone
-6. Keeps it concise and well-organized
-
-Don't include the person's name at the beginning since it will be mentioned separately.
-Use friendly but professional language.
-Base your response on both the summary and description context.
-Keep it direct and concise - no formal closings like 'Best Regards' or 'Thanks again'."""
-
-        fallback_models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
-        models_to_try = [GEMINI_MODEL] + [m for m in fallback_models if m != GEMINI_MODEL]
-        
-        for model_name in models_to_try:
-            try:
-                print(f"Generating combined incident message with model: {model_name}")
-                model = genai.GenerativeModel(model_name)
-                response = model.generate_content(prompt)
-                
-                if hasattr(response, 'text') and response.text:
-                    message = response.text.strip()
-                    final_message = f"{user_mention} {message}"
-                    print(f"Successfully generated combined incident message with model: {model_name}")
-                    return final_message
-                elif response.parts:
-                    message_text = ''.join(part.text for part in response.parts if hasattr(part, 'text'))
-                    if message_text:
-                        final_message = f"{user_mention} {message_text.strip()}"
-                        print(f"Successfully generated combined incident message with model: {model_name}")
-                        return final_message
-                
-            except Exception as e:
-                print(f"Error with model {model_name}: {e}")
-                continue
-        
-        # Fallback message if AI fails
-        fallback_message = f"**Incident Summary:** {incident_summary}\n\nThanks for reporting incident {issue_key}! A developer is on the way to help.\n\n{missing_items_request}"
-        return f"{user_mention} {fallback_message}"
-        
-    except Exception as e:
-        print(f"Error generating combined incident message: {e}")
-        # Ultimate fallback with safe user mention
-        safe_mention = f"<@{slack_user_id}>" if slack_user_id else ""
-        return f"{safe_mention} Thanks for reporting incident {issue_key}! You did great work getting this submitted. A developer is on the way to help. Please share any additional details that might help us resolve this faster."
-
 def post_creator_outreach_message(channel_id, message, slack_user_id):
     """Post the outreach message to the incident channel"""
     try:
@@ -1786,13 +1695,18 @@ def generate_gemini_summary(data):
         try:
             print(f"Trying Gemini model: {model_name}")
             model = genai.GenerativeModel(model_name)
-            prompt = f"""You are a helpful assistant summarizing incident tickets.
+            
+            # Get the prompt from the data
+            prompt = data.get("prompt", "")
+            if not prompt:
+                # Fallback to old format if no prompt provided
+                prompt = f"""You are a helpful assistant summarizing incident tickets.
 
 Summary:
-{data['summary']}
+{data.get('summary', '')}
 
 Description:
-{data['description']}
+{data.get('description', '')}
 
 Please provide a concise summary in plain English suitable for a Slack incident channel."""
 
@@ -1813,10 +1727,10 @@ Please provide a concise summary in plain English suitable for a Slack incident 
         except Exception as e:
             print(f"Error with model {model_name}: {e}")
             if model_name == models_to_try[-1]:  # Last model failed
-                return "Gemini summary could not be generated due to an error."
+                return "Could not generate summary."
             continue  # Try next model
     
-    return "Gemini summary could not be generated."
+    return "Could not generate summary."
 
 def fetch_jira_attachments(issue_key):
     """Fetches media attachments from a Jira ticket."""
@@ -2594,8 +2508,12 @@ def handle_firebot_timeline(channel_id, user_id):
 
 def analyze_channel_timeline(messages, created_timestamp, channel_id):
     """Analyze channel messages to create a timeline of events"""
+    # Convert to Eastern Time
+    eastern_tz = datetime.timezone(datetime.timedelta(hours=-4))  # EDT, adjust for DST as needed
+    created_time = datetime.datetime.fromtimestamp(created_timestamp, eastern_tz)
+    
     timeline_data = {
-        "created_time": datetime.datetime.fromtimestamp(created_timestamp),
+        "created_time": created_time,
         "first_response_time": None,
         "resolution_time": None,
         "total_duration": None,
@@ -2623,15 +2541,10 @@ def analyze_channel_timeline(messages, created_timestamp, channel_id):
     
     print(f"Identified ticket creator: {timeline_data['ticket_creator']}")
     
-    # Convert to Eastern Time
-    eastern_tz = datetime.timezone(datetime.timedelta(hours=-4))  # EDT, adjust for DST as needed
-    
     # Second pass: Analyze timeline
     for msg in messages:
         timestamp = float(msg.get("ts", 0))
-        utc_time = datetime.datetime.fromtimestamp(timestamp)
-        eastern_time = utc_time.astimezone(eastern_tz)
-        msg_time = eastern_time
+        msg_time = datetime.datetime.fromtimestamp(timestamp, eastern_tz)
         user_id = msg.get("user", "")
         text = msg.get("text", "").lower()  # Convert to lowercase for easier matching
         original_text = msg.get("text", "")  # Keep original text for summaries
@@ -2765,7 +2678,7 @@ def format_timeline_message(timeline_data, channel_name):
     """Format the timeline data into a readable message"""
     # Convert to Eastern Time
     eastern_tz = datetime.timezone(datetime.timedelta(hours=-4))  # EDT, adjust for DST as needed
-    created_time = timeline_data["created_time"].astimezone(eastern_tz)
+    created_time = timeline_data["created_time"]  # Already timezone-aware
     
     # Format header
     header = f"📊 Incident Timeline for #{channel_name} 📊\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -2820,7 +2733,7 @@ def format_timeline_message(timeline_data, channel_name):
     
     # Add resolution status if resolved
     if timeline_data["is_resolved"]:
-        resolution_time = timeline_data["resolution_time"].astimezone(eastern_tz)
+        resolution_time = timeline_data["resolution_time"]  # Already timezone-aware
         timeline_events.append(f"\n🎉 Incident resolved at {resolution_time.strftime('%I:%M:%S %p EDT')} (total time: {format_duration(timeline_data['total_duration'])})")
     
     # Combine all sections
@@ -2911,7 +2824,11 @@ def generate_resolution_summary(channel_id, issue_key):
         if not messages:
             return None
         
-        # Generate timeline data
+        # Convert created_time to timezone-aware datetime
+        eastern_tz = datetime.timezone(datetime.timedelta(hours=-4))  # EDT, adjust for DST as needed
+        created_time = datetime.datetime.fromtimestamp(created_timestamp, eastern_tz)
+        
+        # Generate timeline data with timezone-aware timestamps
         timeline_data = analyze_channel_timeline(messages, created_timestamp, channel_id)
         
         # Generate summary using AI
