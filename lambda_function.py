@@ -44,7 +44,9 @@ if GEMINI_MODEL in MODEL_MAPPING:
     GEMINI_MODEL = MODEL_MAPPING[GEMINI_MODEL]
     print(f"Mapped model to: {GEMINI_MODEL}")
 
+# Jira custom field IDs
 JIRA_HOSPITAL_FIELD = os.environ.get("JIRA_HOSPITAL_FIELD", "customfield_10297")
+JIRA_SLACK_CHANNEL_FIELD = os.environ.get("JIRA_SLACK_CHANNEL_FIELD", "customfield_10250")  # Field for Slack channel link
 
 # DynamoDB configuration
 DYNAMODB_TABLE_NAME = os.environ.get("DYNAMODB_TABLE_NAME", "firebot-coordination")
@@ -2430,7 +2432,8 @@ Just type one of the commands above to get started! I'm here to help make incide
 def update_jira_with_slack_link(issue_key, channel_name, channel_id):
     """Updates the Jira ticket with a link to the Slack incident channel"""
     try:
-        url = f"https://{JIRA_DOMAIN}/rest/api/3/issue/{issue_key}/comment"
+        # First, add the comment
+        comment_url = f"https://{JIRA_DOMAIN}/rest/api/3/issue/{issue_key}/comment"
         
         # Create the comment in Atlassian Document Format (ADF)
         comment_body = {
@@ -2463,17 +2466,39 @@ def update_jira_with_slack_link(issue_key, channel_name, channel_id):
             }
         }
         
-        response = requests.post(
-            url,
+        comment_response = requests.post(
+            comment_url,
             auth=(FIREBOT_JIRA_USERNAME, FIREBOT_JIRA_API_TOKEN),
             headers={"Content-Type": "application/json"},
             json=comment_body
         )
         
-        if response.status_code == 201:
-            print(f"Successfully added Slack channel link to Jira ticket {issue_key}")
+        if comment_response.status_code == 201:
+            print(f"Successfully added Slack channel link comment to Jira ticket {issue_key}")
         else:
-            print(f"Failed to update Jira ticket with Slack link: {response.status_code} - {response.text}")
+            print(f"Failed to add comment with Slack link: {comment_response.status_code} - {comment_response.text}")
+        
+        # Then, update the custom field
+        update_url = f"https://{JIRA_DOMAIN}/rest/api/3/issue/{issue_key}"
+        
+        # Create the field update payload - using simpler URL format
+        update_body = {
+            "fields": {
+                JIRA_SLACK_CHANNEL_FIELD: f"slack://channel?team=T024F9QG2&id={channel_id}"
+            }
+        }
+        
+        update_response = requests.put(
+            update_url,
+            auth=(FIREBOT_JIRA_USERNAME, FIREBOT_JIRA_API_TOKEN),
+            headers={"Content-Type": "application/json"},
+            json=update_body
+        )
+        
+        if update_response.status_code == 204:
+            print(f"Successfully updated Slack channel field in Jira ticket {issue_key}")
+        else:
+            print(f"Failed to update Slack channel field: {update_response.status_code} - {update_response.text}")
             
     except Exception as e:
         print(f"Error updating Jira ticket with Slack link: {e}")
