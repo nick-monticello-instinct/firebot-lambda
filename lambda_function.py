@@ -2893,3 +2893,212 @@ def generate_resolution_message(issue_key, channel_id):
             "",
             "Thank you to everyone who helped resolve this incident! 🙌"
         ])
+
+def generate_combined_incident_message(creator_info, checklist_results, issue_key, slack_user_id, parsed_data):
+    """Generate a combined message for the creator with missing information requests"""
+    # Start with a personalized greeting
+    message_parts = [
+        f"<@{slack_user_id}> We've received your report ({issue_key}) regarding {parsed_data.get('summary', 'the incident')}.",
+        f"Thanks for quickly identifying and reporting this {parsed_data.get('type', 'issue')}, {creator_info.get('display_name', 'there')}!",
+        "",
+        "A developer is en route to investigate. To expedite a resolution, please provide:",
+        ""
+    ]
+    
+    # Add missing items if any
+    missing_items = checklist_results.get("missing_items", [])
+    if missing_items:
+        missing_items_text = generate_missing_items_requests(missing_items, issue_key, parsed_data)
+        message_parts.append(missing_items_text)
+    
+    # Join all parts with appropriate spacing
+    return "\n".join(message_parts)
+
+def extract_creator_info(ticket):
+    """Extract creator/reporter information from Jira ticket"""
+    try:
+        fields = ticket.get("fields", {})
+        reporter = fields.get("reporter", {})
+        
+        creator_info = {
+            "display_name": reporter.get("displayName", ""),
+            "email": reporter.get("emailAddress", ""),
+            "account_id": reporter.get("accountId", ""),
+            "username": reporter.get("name", "")  # May not be available in newer Jira
+        }
+        
+        print(f"Extracted creator info: {creator_info}")
+        return creator_info
+        
+    except Exception as e:
+        print(f"Error extracting creator info: {e}")
+        return None
+
+def extract_hospital_name(ticket):
+    """Extract hospital name from Jira ticket"""
+    try:
+        fields = ticket.get("fields", {})
+        
+        # Get hospital name from customfield_10348
+        hospitals = fields.get("customfield_10348", [])
+        if hospitals and isinstance(hospitals, list) and len(hospitals) > 0:
+            hospital_name = str(hospitals[0])
+        else:
+            hospital_name = "unknown"
+            
+        result = hospital_name.strip() if hospital_name else "unknown"
+        print(f"Final extracted hospital name: '{result}'")
+        return result
+        
+    except Exception as e:
+        print(f"Error extracting hospital name: {e}")
+        return "unknown"
+
+def format_hospital_for_channel(hospital_name):
+    """Format hospital name for Slack channel naming"""
+    if not hospital_name or hospital_name == "unknown":
+        return "unknown"
+    
+    # Convert to lowercase and replace spaces and special characters
+    formatted = hospital_name.lower()
+    
+    # Replace spaces and common punctuation with hyphens
+    formatted = re.sub(r'[\s&.,()\'"/\\]+', '-', formatted)
+    
+    # Remove any characters that aren't alphanumeric or hyphens
+    formatted = re.sub(r'[^a-z0-9-]', '', formatted)
+    
+    # Remove multiple consecutive hyphens
+    formatted = re.sub(r'-+', '-', formatted)
+    
+    # Remove leading/trailing hyphens
+    formatted = formatted.strip('-')
+    
+    # Limit length to keep channel name reasonable (Slack has 80 char limit total)
+    if len(formatted) > 20:
+        formatted = formatted[:20].rstrip('-')
+    
+    # Ensure it's not empty
+    if not formatted:
+        formatted = "unknown"
+    
+    print(f"Formatted hospital name '{hospital_name}' to '{formatted}'")
+    return formatted
+
+def analyze_incident_checklist(parsed_data, full_ticket, attachments):
+    """Analyze ticket against specific investigation checklist items"""
+    try:
+        # Get additional fields that might be relevant
+        fields = full_ticket.get("fields", {})
+        priority = fields.get("priority", {}).get("name", "Unknown")
+        status = fields.get("status", {}).get("name", "Unknown")
+        created = fields.get("created", "Unknown")
+        
+        # Create a structured analysis prompt for the 7 specific items
+        prompt = f"""You are an incident response assistant for a veterinary software company. Analyze this Jira ticket against our investigation checklist.
+
+TICKET DETAILS:
+Priority: {priority}
+Status: {status}
+Created: {created}
+Attachments: {len(attachments)} media files found
+
+Summary: {parsed_data['summary']}
+
+Description: {parsed_data['description']}
+
+Please analyze this ticket and determine if it contains information about each of these 7 critical investigation items. For each item, respond with either "FOUND" or "MISSING" followed by a brief explanation. Pay special attention to information already provided in the description - don't ask for information that's already clearly stated.
+
+INVESTIGATION CHECKLIST:
+1. Issue replication in customer's application - Has the reporter confirmed they can reproduce this issue in their own application? Look for statements about current impact.
+2. Issue replication on Demo instance - Has anyone tested this on our Demo/staging environment?
+3. Steps to reproduce - Are clear, step-by-step reproduction instructions provided?
+4. Screenshots provided - Are screenshots or visual evidence included? (We found {len(attachments)} media files)
+5. Problem start time - When did this issue first start occurring for the customer? Look for any timing information in the description.
+6. Practice-wide impact - Is this affecting the entire practice/all users, or just specific users? Look for statements about scope of impact.
+7. Multi-practice impact - Are other veterinary practices experiencing this same issue?
+
+For each item, respond in this exact format:
+1. [FOUND/MISSING]: Brief explanation
+2. [FOUND/MISSING]: Brief explanation
+3. [FOUND/MISSING]: Brief explanation
+4. [FOUND/MISSING]: Brief explanation
+5. [FOUND/MISSING]: Brief explanation
+6. [FOUND/MISSING]: Brief explanation
+7. [FOUND/MISSING]: Brief explanation
+
+Be thorough but concise in your analysis. If information is clearly stated in the description, mark it as FOUND and quote the relevant text."""
+
+        fallback_models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
+        models_to_try = [GEMINI_MODEL] + [m for m in fallback_models if m != GEMINI_MODEL]
+        
+        for model_name in models_to_try:
+            try:
+                print(f"Analyzing incident checklist with model: {model_name}")
+                model = genai.GenerativeModel(model_name)
+                response = model.generate_content(prompt)
+                
+                if hasattr(response, 'text') and response.text:
+                    analysis = response.text.strip()
+                    print(f"Successfully analyzed incident checklist with model: {model_name}")
+                    return parse_checklist_analysis(analysis)
+                elif response.parts:
+                    analysis_text = ''.join(part.text for part in response.parts if hasattr(part, 'text'))
+                    if analysis_text:
+                        print(f"Successfully analyzed incident checklist with model: {model_name}")
+                        return parse_checklist_analysis(analysis_text.strip())
+                
+            except Exception as e:
+                print(f"Error with model {model_name}: {e}")
+                continue
+        
+        return create_default_checklist_result()
+        
+    except Exception as e:
+        print(f"Error analyzing incident checklist: {e}")
+        return create_default_checklist_result()
+
+def parse_checklist_analysis(analysis_text):
+    """Parse the AI analysis into structured checklist results"""
+    checklist_items = [
+        "Issue replication in customer's application",
+        "Issue replication on Demo instance", 
+        "Steps to reproduce",
+        "Screenshots provided",
+        "Problem start time",
+        "Practice-wide impact",
+        "Multi-practice impact"
+    ]
+    
+    results = {
+        "missing_items": [],
+        "found_items": [],
+        "analysis_text": analysis_text
+    }
+    
+    lines = analysis_text.split('\n')
+    for i, line in enumerate(lines):
+        if line.strip() and any(str(j+1) + '.' in line for j in range(7)):
+            if 'MISSING' in line.upper():
+                if i < len(checklist_items):
+                    results["missing_items"].append({
+                        "item": checklist_items[i] if i < len(checklist_items) else f"Item {i+1}",
+                        "explanation": line.split(':', 1)[1].strip() if ':' in line else line
+                    })
+            elif 'FOUND' in line.upper():
+                if i < len(checklist_items):
+                    results["found_items"].append({
+                        "item": checklist_items[i] if i < len(checklist_items) else f"Item {i+1}",
+                        "explanation": line.split(':', 1)[1].strip() if ':' in line else line
+                    })
+    
+    print(f"Parsed checklist: {len(results['missing_items'])} missing, {len(results['found_items'])} found")
+    return results
+
+def create_default_checklist_result():
+    """Create a default checklist result when AI analysis fails"""
+    return {
+        "missing_items": [],
+        "found_items": [],
+        "analysis_text": "Could not complete checklist analysis due to technical issues."
+    }
