@@ -2203,7 +2203,7 @@ def update_jira_with_slack_link(issue_key, channel_name, channel_id):
                                     {
                                         "type": "link",
                                         "attrs": {
-                                            "href": f"slack://channel?team=T024F9QG2&id={channel_id}"
+                                            "href": f"https://instinctvet.slack.com/archives/{channel_id}"
                                         }
                                     }
                                 ]
@@ -2229,10 +2229,10 @@ def update_jira_with_slack_link(issue_key, channel_name, channel_id):
         # Then, update the custom field
         update_url = f"https://{JIRA_DOMAIN}/rest/api/3/issue/{issue_key}"
         
-        # Create the field update payload - using simpler URL format
+        # Create the field update payload - using HTTPS URL format
         update_body = {
             "fields": {
-                JIRA_SLACK_CHANNEL_FIELD: f"slack://channel?team=T024F9QG2&id={channel_id}"
+                "customfield_10331": f"https://instinctvet.slack.com/archives/{channel_id}"
             }
         }
         
