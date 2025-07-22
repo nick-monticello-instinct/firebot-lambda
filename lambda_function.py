@@ -50,7 +50,7 @@ JIRA_SLACK_CHANNEL_FIELD = os.environ.get("JIRA_SLACK_CHANNEL_FIELD", "customfie
 
 # DynamoDB configuration
 DYNAMODB_TABLE_NAME = os.environ.get("DYNAMODB_TABLE_NAME", "firebot-coordination")
-DYNAMODB_REGION = os.environ.get("AWS_REGION", "us-east-2")
+DYNAMODB_REGION = os.environ.get("AWS_REGION", "us-east-1")
 
 # Initialize DynamoDB client
 if DYNAMODB_AVAILABLE:
