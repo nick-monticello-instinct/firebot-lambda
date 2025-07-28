@@ -799,9 +799,16 @@ def process_fire_ticket(event_data, user_id):
     text = event.get("text", "")
     print(f"Processing message: {text}")
     
-    # Skip messages from bots to prevent processing our own messages
-    if event.get("bot_id") or event.get("app_id"):
-        print("Skipping bot message to prevent duplicate processing")
+    # Skip messages from bots to prevent processing our own messages, but allow Jira bot
+    jira_bot_id = "B87HWGEMD"  # Jira Cloud bot ID
+    jira_app_id = "A2RPP3NFR"  # Jira Cloud app ID
+    
+    bot_id = event.get("bot_id")
+    app_id = event.get("app_id")
+    
+    # Allow messages from Jira bot, but skip other bots (including our own)
+    if (bot_id and bot_id != jira_bot_id) or (app_id and app_id != jira_app_id):
+        print(f"Skipping bot message (bot_id: {bot_id}, app_id: {app_id}) to prevent duplicate processing")
         return
     
     # Additional check: skip if the message is from our specific bot user
